@@ -52,6 +52,7 @@ pub(crate) enum WorkerPaste {
     },
 }
 
+#[cfg(not(target_os = "android"))]
 pub(crate) fn read_for_worker() -> Option<WorkerPaste> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     if let Ok(files) = clipboard.get().file_list()
@@ -73,6 +74,11 @@ pub(crate) fn read_for_worker() -> Option<WorkerPaste> {
         source: PasteSource::Clipboard,
     };
     Some(WorkerPaste::Bitmap { pasted, rgba })
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn read_for_worker() -> Option<WorkerPaste> {
+    None
 }
 
 pub fn image_path_from_paste(text: &str) -> Option<PastedImage> {

@@ -32,18 +32,18 @@ if [ "$TARGET" = darwin-arm64 ]; then
   codesign --force --sign - --timestamp=none "$STAGE/bin/native-scroll-helper" 2>/dev/null || true
 fi
 
-AGENT_BROWSER_BIN="$("$ROOT/scripts/agent-browser.sh" --path)"
+AGENT_BROWSER_BIN="$(bash "$ROOT/scripts/agent-browser.sh" --path)"
 cp "$AGENT_BROWSER_BIN" "$STAGE/agent-browser/bin/agent-browser"
 if [ "$TARGET" = darwin-arm64 ]; then
   codesign --force --sign - --timestamp=none "$STAGE/agent-browser/bin/agent-browser" 2>/dev/null || true
 fi
 
-"$ROOT/scripts/bundle.sh" "$ROOT/cli/src/main.ts" "$STAGE/cli/dist/main.js"
-"$ROOT/scripts/bundle.sh" "$ROOT/browser/src/main.tsx" "$STAGE/browser/dist/main.js"
+bash "$ROOT/scripts/bundle.sh" "$ROOT/cli/src/main.ts" "$STAGE/cli/dist/main.js"
+bash "$ROOT/scripts/bundle.sh" "$ROOT/browser/src/main.tsx" "$STAGE/browser/dist/main.js"
 
 cp "$ROOT/scripts/apparmor.sh" "$STAGE/scripts/apparmor.sh"
 
-"$ROOT/scripts/generate-skill.sh"
+bash "$ROOT/scripts/generate-skill.sh"
 cp -R "$ROOT/skill/build" "$STAGE/skills"
 
 cp "$ROOT/assets/fonts/JetBrainsMono-Regular.ttf" "$STAGE/assets/fonts/"

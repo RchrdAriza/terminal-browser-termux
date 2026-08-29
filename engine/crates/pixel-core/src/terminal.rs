@@ -505,6 +505,7 @@ impl Terminal {
         let reply = self.read_report(FRAME_PROBE_TIMEOUT_MS, |buf| {
             parse_probe_reply(buf, b"Gi=299;")
         })?;
+        #[cfg(not(target_os = "android"))]
         let _ = rustix::shm::unlink(&name);
         Ok(reply.unwrap_or(false))
     }
@@ -544,6 +545,7 @@ impl Terminal {
     fn write_shm_frame(&mut self, data: &[u8]) -> io::Result<String> {
         let name = self.shm_name(self.frame_seq % FRAME_SLOTS);
         self.frame_seq += 1;
+        #[cfg(not(target_os = "android"))]
         let _ = rustix::shm::unlink(&name);
         write_shm(&name, data)?;
         Ok(name)
@@ -1198,6 +1200,7 @@ fn parse_probe_reply(buf: &[u8], needle: &[u8]) -> Option<bool> {
     Some(rest.starts_with(b"OK"))
 }
 
+#[cfg(not(target_os = "android"))]
 #[allow(unsafe_code)]
 pub(crate) struct FrameFile {
     path: std::path::PathBuf,
@@ -1205,6 +1208,14 @@ pub(crate) struct FrameFile {
     len: usize,
 }
 
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+pub(crate) struct FrameFile {
+    path: std::path::PathBuf,
+    len: usize,
+}
+
+#[cfg(not(target_os = "android"))]
 #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
 impl FrameFile {
     pub(crate) fn create(path: std::path::PathBuf, len: usize) -> io::Result<Self> {
@@ -1246,6 +1257,25 @@ impl FrameFile {
     }
 }
 
+#[cfg(target_os = "android")]
+#[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
+impl FrameFile {
+    pub(crate) fn create(path: std::path::PathBuf, len: usize) -> io::Result<Self> {
+        Err(io::Error::other("shm not available on android"))
+    }
+
+    pub(crate) fn write(&mut self, _data: &[u8]) {}
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
 impl Drop for FrameFile {
     fn drop(&mut self) {
@@ -1256,6 +1286,14 @@ impl Drop for FrameFile {
     }
 }
 
+#[cfg(target_os = "android")]
+impl Drop for FrameFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 #[allow(unsafe_code)]
 pub(crate) fn write_shm(name: &str, data: &[u8]) -> io::Result<()> {
     let fd = rustix::shm::open(
@@ -1279,11 +1317,17 @@ pub(crate) fn write_shm(name: &str, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "android")]
+pub(crate) fn write_shm(_name: &str, _data: &[u8]) -> io::Result<()> {
+    Err(io::Error::other("shm not available on android"))
+}
+
 impl Drop for Terminal {
     fn drop(&mut self) {
         if let Some(slot) = self.resize_slot.take() {
             RESIZE_WAKE_FDS[slot].store(-1, std::sync::atomic::Ordering::Release);
         }
+        #[cfg(not(target_os = "android"))]
         for slot in 0..FRAME_SLOTS {
             let _ = rustix::shm::unlink(self.shm_name(slot));
         }
@@ -1984,6 +2028,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "android"))]
     fn a_frame_file_is_rewritten_in_place_and_removed_on_drop() {
         let path = std::env::temp_dir().join(format!("tb-frametest-{}.rgba", std::process::id()));
         let first: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
@@ -2002,6 +2047,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "android"))]
     #[allow(unsafe_code)]
     fn shm_roundtrip() {
         let name = format!("/px-test-{}", std::process::id());
