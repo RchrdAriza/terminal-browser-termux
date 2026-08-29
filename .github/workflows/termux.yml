@@ -1,0 +1,46 @@
+name: termux-sixel
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-termux:
+    runs-on: ubuntu-22.04-arm
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../cargo-target
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build termux (sixel/iterm)
+        run: bash scripts/release.sh "termux-${{ github.sha }}" "dev"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terminal-browser-termux-linux-arm64
+          path: |
+            dist-release/terminal-browser-linux-arm64.tar.gz
+            dist-release/manifest-linux-arm64.json
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "### termux sixel build" >> $GITHUB_STEP_SUMMARY
+          echo "commit ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          ls -lh dist-release/ >> $GITHUB_STEP_SUMMARY
