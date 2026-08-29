@@ -6,6 +6,8 @@ pub mod ghostty;
 mod herdr;
 mod image_cache;
 mod kitty;
+pub mod iterm;
+pub mod sixel;
 pub mod logging;
 mod menu;
 mod native;

@@ -5,5 +5,14 @@ export { shellIn } from "./run";
 export { callerTty } from "./shared";
 export type { TerminalCheck } from "./detect";
 export { cannotOpenPanes, checkTerminal, detect } from "./detect";
-export type { GraphicsSupport } from "./graphics";
-export { probeGraphics, unsupportedGraphicsMessage, SKIP_ENV as GRAPHICS_SKIP_ENV } from "./graphics";
+export type { GraphicsBackend, GraphicsSupport } from "./graphics";
+export {
+  BACKEND_ENV,
+  detectBackend,
+  forcedBackend,
+  probeBackend,
+  probeGraphics,
+  sixelReply,
+  unsupportedGraphicsMessage,
+  SKIP_ENV as GRAPHICS_SKIP_ENV,
+} from "./graphics";

@@ -430,6 +430,9 @@ function currentTerminal(): Promise<TerminalCheck> {
 
 async function newTabCommand(url: string | undefined, key: string | undefined): Promise<number> {
   const check = await currentTerminal();
+  if (check.backend && !process.env.TERMINAL_BROWSER_BACKEND) {
+    process.env.TERMINAL_BROWSER_BACKEND = check.backend;
+  }
   const found = await browsers(check.terminal);
   const here = key
     ? found.filter((browser) => recordKey(browser) === key)
@@ -536,7 +539,11 @@ async function openCommand(args: string[]) {
   if (positionals.length > 1) {
     fail(`unexpected ${positionals[1]} (one url; --split <direction> opens a new pane)`);
   }
-  await requireGraphics(await currentTerminal());
+  const check = await currentTerminal();
+  if (check.backend && !process.env.TERMINAL_BROWSER_BACKEND) {
+    process.env.TERMINAL_BROWSER_BACKEND = check.backend;
+  }
+  await requireGraphics(check);
   if (!split && interactiveTty()) {
     return openHere(args);
   }

@@ -431,6 +431,9 @@ impl Terminal {
     }
 
     fn probe_transport(&mut self) -> io::Result<FrameTransport> {
+        if backend_kind() != BackendKind::Kitty {
+            return Ok(FrameTransport::Inline);
+        }
         if let Some(forced) = std::env::var("TERMINAL_BROWSER_FRAMES")
             .ok()
             .and_then(|value| match value.trim() {
@@ -590,10 +593,15 @@ impl Terminal {
             .is_some_and(|(w, h)| canvas.width < w || canvas.height < h);
         self.last_frame_size = Some((canvas.width, canvas.height));
 
+        let backend = backend_kind();
+        let is_kitty = backend == BackendKind::Kitty;
+
         let mut frame = Vec::new();
-        frame.extend_from_slice(b"\x1b[?2026h"); // mode 2026 atomic updates
+        frame.extend_from_slice(b"\x1b[?2026h");
         if shrank {
-            frame.extend_from_slice(&crate::kitty::kitty_delete(self.image_id, self.wrapper));
+            if is_kitty {
+                frame.extend_from_slice(&crate::kitty::kitty_delete(self.image_id, self.wrapper));
+            }
             frame.extend_from_slice(b"\x1b[2J");
             if let Ok(ws) = self.size() {
                 let blank_row = " ".repeat(ws.cols as usize);
@@ -603,51 +611,70 @@ impl Terminal {
             }
             self.placeholders = None;
         }
-        let placement = if self.wrapper.relayed() {
-            let (cols, rows) = self.grid_for(canvas);
-            Placement::Cells { cols, rows }
+
+        if is_kitty {
+            let placement = if self.wrapper.relayed() {
+                let (cols, rows) = self.grid_for(canvas);
+                Placement::Cells { cols, rows }
+            } else {
+                frame.extend_from_slice(b"\x1b[H");
+                Placement::Cursor
+            };
+            if let Some(medium) = match self.transport {
+                FrameTransport::File => Some(crate::kitty::Medium::File),
+                FrameTransport::Shared => Some(crate::kitty::Medium::Shared),
+                FrameTransport::Inline => None,
+            } {
+                let name = crate::profiler::span("kitty.handoff", || match self.transport {
+                    FrameTransport::File => self.write_frame_file(&canvas.pixels),
+                    _ => self.write_shm_frame(&canvas.pixels),
+                })?;
+                frame.extend_from_slice(&crate::kitty::kitty_transmit_named(
+                    self.image_id,
+                    canvas.width,
+                    canvas.height,
+                    &name,
+                    medium,
+                    placement,
+                    self.wrapper,
+                ));
+            } else {
+                frame.extend_from_slice(&crate::kitty::kitty_transmit_placed(
+                    self.image_id,
+                    canvas.width,
+                    canvas.height,
+                    &canvas.pixels,
+                    placement,
+                    self.wrapper,
+                ));
+            }
+            if let Placement::Cells { cols, rows } = placement
+                && self.placeholders != Some((cols, rows))
+            {
+                frame.extend_from_slice(&crate::kitty::placeholder_grid(
+                    self.image_id, cols, rows,
+                ));
+                self.placeholders = Some((cols, rows));
+            }
         } else {
             frame.extend_from_slice(b"\x1b[H");
-            Placement::Cursor
-        };
-        /*
-         we eventualy need to be more principled about
-         being generic over graphcis protocols to support
-         more terminals (even if degraded)
-        */
-        if let Some(medium) = match self.transport {
-            FrameTransport::File => Some(crate::kitty::Medium::File),
-            FrameTransport::Shared => Some(crate::kitty::Medium::Shared),
-            FrameTransport::Inline => None,
-        } {
-            let name = crate::profiler::span("kitty.handoff", || match self.transport {
-                FrameTransport::File => self.write_frame_file(&canvas.pixels),
-                _ => self.write_shm_frame(&canvas.pixels),
-            })?;
-            frame.extend_from_slice(&crate::kitty::kitty_transmit_named(
-                self.image_id,
-                canvas.width,
-                canvas.height,
-                &name,
-                medium,
-                placement,
-                self.wrapper,
-            ));
-        } else {
-            frame.extend_from_slice(&crate::kitty::kitty_transmit_placed(
-                self.image_id,
-                canvas.width,
-                canvas.height,
-                &canvas.pixels,
-                placement,
-                self.wrapper,
-            ));
-        }
-        if let Placement::Cells { cols, rows } = placement
-            && self.placeholders != Some((cols, rows))
-        {
-            frame.extend_from_slice(&crate::kitty::placeholder_grid(self.image_id, cols, rows));
-            self.placeholders = Some((cols, rows));
+            self.placeholders = None;
+            let payload = match backend {
+                BackendKind::Sixel => crate::sixel::sixel_transmit(
+                    canvas.width,
+                    canvas.height,
+                    &canvas.pixels,
+                    self.wrapper,
+                ),
+                BackendKind::Iterm => crate::iterm::iterm_transmit(
+                    canvas.width,
+                    canvas.height,
+                    &canvas.pixels,
+                    self.wrapper,
+                ),
+                BackendKind::Kitty => unreachable!(),
+            };
+            frame.extend_from_slice(&payload);
         }
         frame.extend_from_slice(b"\x1b[?2026l");
         crate::profiler::span("term.write", || {
@@ -1121,6 +1148,32 @@ enum FrameTransport {
     Inline,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendKind {
+    Kitty,
+    Sixel,
+    Iterm,
+}
+
+fn backend_kind() -> BackendKind {
+    if let Ok(raw) = std::env::var("TERMINAL_BROWSER_BACKEND") {
+        match raw.to_lowercase().as_str() {
+            "sixel" => return BackendKind::Sixel,
+            "iterm" | "iterm2" => return BackendKind::Iterm,
+            "kitty" => return BackendKind::Kitty,
+            _ => {}
+        }
+    }
+    if std::env::var("TERMUX_VERSION").is_ok()
+        || std::env::var("PREFIX")
+            .map(|p| p.contains("com.termux"))
+            .unwrap_or(false)
+    {
+        return BackendKind::Sixel;
+    }
+    BackendKind::Kitty
+}
+
 static NEXT_TERMINAL_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /**
@@ -1234,8 +1287,10 @@ impl Drop for Terminal {
         for slot in 0..FRAME_SLOTS {
             let _ = rustix::shm::unlink(self.shm_name(slot));
         }
-        let delete = crate::kitty::kitty_delete(self.image_id, self.wrapper);
-        let _ = self.io.out().write_all(&delete);
+        if backend_kind() == BackendKind::Kitty {
+            let delete = crate::kitty::kitty_delete(self.image_id, self.wrapper);
+            let _ = self.io.out().write_all(&delete);
+        }
         if !self.kitty_keyboard {
             let _ = self.io.out().write_all(b"\x1b[>4;0m");
         }
