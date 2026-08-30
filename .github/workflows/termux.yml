@@ -28,6 +28,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Test pixel-core (sixel/iterm)
+        run: cargo test -p pixel-core --release
+
       - name: Build termux (sixel/iterm)
         run: bash scripts/release.sh "termux-${{ github.sha }}" "dev"
 
