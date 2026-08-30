@@ -67,6 +67,14 @@ const ELECTRON_DEV_BIN =
     ? ["Electron.app", "Contents", "MacOS", "Electron"]
     : ["electron"];
 
+function onTermux(): boolean {
+  return (
+    process.env.TERMUX_VERSION !== undefined ||
+    (process.env.PREFIX ?? "").includes("com.termux") ||
+    process.env.ANDROID_ROOT !== undefined
+  );
+}
+
 function browserDirectory(): string {
   return path.resolve(__dirname, "..", "..", "browser");
 }
@@ -98,6 +106,9 @@ function browserLaunchCommand(argv: string[]): { command: string[]; cwd: string 
   // https://source.chromium.org/chromium/chromium/src/+/refs/tags/150.0.7871.212:ui/ozone/platform/headless/headless_screen.cc;l=37-46
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     argv = [...argv, "--ozone-platform=headless", "--screen-info={8192x8192}"];
+  }
+  if (onTermux()) {
+    argv = [...argv, "--no-sandbox", "--disable-dev-shm-usage"];
   }
   ensureDataDir();
   const logDir = LOGS_DIR;
