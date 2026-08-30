@@ -30,6 +30,7 @@ jobs:
 
       - name: Test pixel-core (sixel/iterm)
         run: cargo test -p pixel-core --release
+        working-directory: engine
 
       - name: Build termux (sixel/iterm)
         run: bash scripts/release.sh "termux-${{ github.sha }}" "dev"
