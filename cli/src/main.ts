@@ -75,6 +75,18 @@ function onTermux(): boolean {
   );
 }
 
+const TERMUX_TMP = "/data/data/com.termux/files/usr/tmp";
+
+function termuxTmpDir(): string {
+  const candidate = process.env.PREFIX ? `${process.env.PREFIX}/tmp` : TERMUX_TMP;
+  try {
+    fs.accessSync(candidate, fs.constants.W_OK);
+    return candidate;
+  } catch {
+    return TERMUX_TMP;
+  }
+}
+
 function browserDirectory(): string {
   return path.resolve(__dirname, "..", "..", "browser");
 }
@@ -108,7 +120,24 @@ function browserLaunchCommand(argv: string[]): { command: string[]; cwd: string 
     argv = [...argv, "--ozone-platform=headless", "--screen-info={8192x8192}"];
   }
   if (onTermux()) {
-    argv = [...argv, "--no-sandbox", "--disable-dev-shm-usage"];
+    // Chromium in Termux has no SUID sandbox, no /dev/shm, and its GPU
+    // process cannot open a display. Run the GPU in-process and fall back
+    // to software rasterization so offscreen rendering still produces frames.
+    argv = [
+      ...argv,
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--in-process-gpu",
+    ];
+    if (process.env.TERMINAL_BROWSER_SHM === undefined) {
+      process.env.TERMINAL_BROWSER_SHM = "0";
+    }
+    // `/tmp` is not writable on Android, Chromium needs a writable TMPDIR
+    // for shared memory buffers.
+    if (!process.env.TMPDIR) {
+      process.env.TMPDIR = termuxTmpDir();
+    }
   }
   ensureDataDir();
   const logDir = LOGS_DIR;

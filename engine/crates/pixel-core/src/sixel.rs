@@ -4,17 +4,11 @@ pub fn sixel_transmit(width: u32, height: u32, rgba: &[u8], wrapper: Wrapper) ->
     if width == 0 || height == 0 || rgba.is_empty() {
         return crate::iterm::iterm_transmit(width, height, rgba, wrapper);
     }
-    let encoded = encode_sixel(width, height, rgba);
-    match encoded {
-        Some(seq) => wrapper.wrap(&seq),
-        None => crate::iterm::iterm_transmit(width, height, rgba, wrapper),
-    }
+    let seq = encode_sixel(width, height, rgba);
+    wrapper.wrap(&seq)
 }
 
-fn encode_sixel(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
-    if width > 4096 || height > 4096 {
-        return None;
-    }
+fn encode_sixel(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
 
@@ -148,10 +142,11 @@ fn encode_sixel(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     }
 
     out.extend_from_slice(b"\x1b\\");
-    if out.len() > 1024 * 1024 {
-        return None;
-    }
-    Some(out)
+    // A sixel terminal cannot render iTerm2 `]1337;` sequences, so we never
+    // fall back to those. There is no size cap here; the engine's frame
+    // budget throttles total bytes per second, and clipping to the visible
+    // raster is the terminal's job.
+    out
 }
 
 #[cfg(test)]
@@ -163,17 +158,19 @@ mod tests {
     fn sixel_starts_with_dcs() {
         let out = sixel_transmit(2, 2, &[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255], Wrapper::None);
         let s = String::from_utf8_lossy(&out);
-        assert!(s.starts_with("\x1bPq") || s.starts_with("\x1b]1337;"));
+        assert!(s.starts_with("\x1bPq"));
     }
 
     #[test]
-    fn sixel_fallback_for_large() {
-        let w = 5000u32;
-        let h = 5000u32;
-        let rgba = vec![0u8; (w * h * 4) as usize];
+    fn sixel_never_falls_back_to_iterm() {
+        // A wide frame must still be encoded as sixel, never as iTerm2 `]1337;`.
+        let w = 800u32;
+        let h = 600u32;
+        let rgba = vec![7u8; (w * h * 4) as usize];
         let out = sixel_transmit(w, h, &rgba, Wrapper::None);
         let s = String::from_utf8_lossy(&out);
-        assert!(s.starts_with("\x1b]1337;") || s.is_empty());
+        assert!(s.starts_with("\x1bPq"));
+        assert!(!s.contains("1337"));
     }
 
     #[test]
