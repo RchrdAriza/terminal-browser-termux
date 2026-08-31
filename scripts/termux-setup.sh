@@ -46,7 +46,13 @@ find "$GLIBC_LIB" -maxdepth 1 -type f -name '*.so*' -exec sh -c '
     fi;
   done
 ' "$GLIBC_LIBS" {} +
-find "$GLIBC_LIB" -maxdepth 1 -type l -name '*.so*' -exec cp -an {} "$GLIBC_LIBS/" \;
+find "$GLIBC_LIB" -maxdepth 1 -type l -name '*.so*' \
+  ! -name 'libc.so' ! -name 'libc.so.6' ! -name 'libpthread.so' \
+  -exec cp -an {} "$GLIBC_LIBS/" \;
+# The core runtime must come from real ELF files, not the GNU ld scripts.
+for lib in libc.so.6 libm.so.6 libgcc_s.so.1 libpthread.so.0; do
+  [ -e "$GLIBC_LIBS/$lib" ] || cp -an "$GLIBC_LIB/$lib" "$GLIBC_LIBS/";
+done
 
 INSTALL_DIR="${TERMINAL_BROWSER_INSTALL_DIR:-$HOME/.local/share/terminal-browser}"
 ELECTRON="$INSTALL_DIR/electron/electron"
