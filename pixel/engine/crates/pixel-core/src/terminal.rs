@@ -501,8 +501,9 @@ impl Terminal {
         retry_intr(|| termios::tcsetattr(io.read_fd(), OptionalActions::Drain, &raw)).map_err(|e| step("tcsetattr", e.into()))?;
 
         // would prefer if they weren't magic and linked to some known doc on the internet
+        // 1002 comes before 1003 for terminals like Termux that only know 1002 and turn touches into it
         io.out().write_all(
-            b"\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1004h\x1b[?2004h\x1b[?2048h\x1b[>1u",
+            b"\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1004h\x1b[?2004h\x1b[?2048h\x1b[>1u",
         )?; // enable many reporting modes so we get info about mouse/keyboard
         io.out().flush()?;
 
@@ -1725,7 +1726,7 @@ impl Drop for Terminal {
             let _ = self.io.out().write_all(b"\x1b[?2031l");
         }
         let _ = self.io.out().write_all(
-            b"\x1b[<u\x1b[?2048l\x1b[?2004l\x1b[?1004l\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l",
+            b"\x1b[<u\x1b[?2048l\x1b[?2004l\x1b[?1004l\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25h\x1b[?1049l",
         );
         let _ = self.io.out().flush();
         if let Some(saved) = &self.saved {
