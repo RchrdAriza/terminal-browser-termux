@@ -299,6 +299,8 @@ pub struct Terminal {
     present: Presenter,
     patches: present::Patched,
     animation: present::Animation,
+    cell_protocol: Option<crate::cell_graphics::CellProtocol>,
+    cells: present::Cells,
     highlight_transmits: bool,
     overlay: present::Overlay,
     flashes: present::Flashes,
@@ -526,7 +528,11 @@ impl Terminal {
             terminal.herdr_retry = Some((Instant::now() + HERDR_RETRY_MIN, HERDR_RETRY_MIN));
         }
         // these are a bit messy/sus
-        terminal.transport = terminal.probe_transport(&env)?;
+        terminal.cell_protocol = terminal.probe_cell_protocol(&env)?;
+        terminal.transport = match terminal.cell_protocol {
+            Some(_) => FrameTransport::Inline,
+            None => terminal.probe_transport(&env)?,
+        };
         terminal.identity = terminal.probe_identity(&env)?;
         terminal.present = terminal.choose_present(&env)?;
         terminal.color_scheme_updates = terminal.probe_color_scheme()?;
@@ -568,6 +574,8 @@ impl Terminal {
             present: Presenter::Full,
             patches: present::Patched::default(),
             animation: present::Animation::default(),
+            cell_protocol: None,
+            cells: present::Cells::default(),
             highlight_transmits: false,
             overlay: present::Overlay::default(),
             flashes: present::Flashes::default(),
@@ -790,6 +798,7 @@ impl Terminal {
             }
             Presenter::Patched => self.draw_patched(frame, &mut out),
             Presenter::Animation => self.draw_animation(frame, &mut out),
+            Presenter::Cells(protocol) => self.draw_cells(protocol, frame, &mut out),
         };
         self.write_synchronized(&out)?;
         drawn
@@ -1705,8 +1714,10 @@ impl Drop for Terminal {
             return;
         }
         self.payloads.remove_all();
-        let delete = crate::kitty::kitty_delete(self.image_id, self.wrapper);
-        let _ = self.io.out().write_all(&delete);
+        if self.cell_protocol.is_none() {
+            let delete = crate::kitty::kitty_delete(self.image_id, self.wrapper);
+            let _ = self.io.out().write_all(&delete);
+        }
         if !self.kitty_keyboard {
             let _ = self.io.out().write_all(b"\x1b[>4;0m");
         }
