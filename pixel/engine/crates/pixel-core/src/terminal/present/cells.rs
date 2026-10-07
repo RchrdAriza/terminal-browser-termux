@@ -3,7 +3,7 @@ use std::io;
 use super::super::{SessionEnv, Terminal};
 use crate::canvas::{Canvas, Frame};
 use crate::cell_graphics::{CellProtocol, over_black};
-use crate::surfaces::Rect;
+use crate::surfaces::{OpaqueArea, Rect};
 
 const GRAPHICS_PROBE_ID: u32 = 297;
 const GRAPHICS_PROBE_TIMEOUT_MS: u64 = 1000;
@@ -12,13 +12,26 @@ const GRAPHICS_PROBE_TIMEOUT_MS: u64 = 1000;
 // so after this many pixels we clear it and send a whole frame.
 const CLEAR_AFTER_PIXELS: u64 = 24_000_000;
 const MAX_RECTS: usize = 24;
+const RUN_GAP_CELLS: usize = 4;
 const TOP_ROWS_WITHOUT_REGION: u32 = 2;
+const MIN_SHIFT_ROWS: u32 = 4;
+const MIN_TELLING_PIXEL_ROWS: usize = 8;
+const SHIFT_MATCH: f32 = 0.9;
 
 #[derive(Debug, Default)]
 pub(crate) struct Cells {
     shown: Vec<u8>,
     size: Option<(u32, u32)>,
     pixels_since_clear: u64,
+    // Termux keeps images in the cells they cover, so scrolling lines moves them too.
+    moves_images: bool,
+}
+
+/// Content below `top_row` moved up by `rows` lines, or down when negative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shift {
+    top_row: u32,
+    rows: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,11 +105,17 @@ fn touch(a: Rect, b: Rect) -> bool {
     a.x <= b.x + b.w && b.x <= a.x + a.w && a.y <= b.y + b.h && b.y <= a.y + a.h
 }
 
+fn waste(a: Rect, b: Rect) -> u64 {
+    a.union(b).area().saturating_sub(a.area() + b.area())
+}
+
+/// Joins rects that touch when their bounding box costs little more than sending both,
+/// so a full-width strip and a tall thin scrollbar do not turn into the whole page.
 fn merge(mut rects: Vec<Rect>) -> Vec<Rect> {
     'again: loop {
         for i in 0..rects.len() {
             for j in i + 1..rects.len() {
-                if touch(rects[i], rects[j]) {
+                if touch(rects[i], rects[j]) && waste(rects[i], rects[j]) * 4 <= rects[i].area() + rects[j].area() {
                     let other = rects.swap_remove(j);
                     rects[i] = rects[i].union(other);
                     continue 'again;
@@ -105,8 +124,18 @@ fn merge(mut rects: Vec<Rect>) -> Vec<Rect> {
         }
         break;
     }
-    if rects.len() > MAX_RECTS {
-        return vec![rects.into_iter().fold(Rect::default(), Rect::union)];
+    while rects.len() > MAX_RECTS {
+        let mut cheapest = (0, 1, u64::MAX);
+        for i in 0..rects.len() {
+            for j in i + 1..rects.len() {
+                let cost = waste(rects[i], rects[j]);
+                if cost < cheapest.2 {
+                    cheapest = (i, j, cost);
+                }
+            }
+        }
+        let other = rects.swap_remove(cheapest.1);
+        rects[cheapest.0] = rects[cheapest.0].union(other);
     }
     rects
 }
@@ -125,6 +154,52 @@ fn scroll_safe_pieces(rect: Rect, cell_height: u32) -> Vec<Rect> {
     ]
 }
 
+fn row_hash(rgb: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    rgb.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Rows of a single color look alike wherever they land, so only rows with something on them count.
+fn best_shift(old: &[u64], new: &[u64], telling: &[bool], cell_height: u32, max_rows: u32) -> Option<i32> {
+    let score = |dy: i64| {
+        let (mut matched, mut counted) = (0usize, 0usize);
+        for y in 0..new.len() as i64 {
+            let from = y + dy;
+            if from < 0 || from >= old.len() as i64 || !telling[y as usize] {
+                continue;
+            }
+            counted += 1;
+            matched += usize::from(new[y as usize] == old[from as usize]);
+        }
+        (counted >= MIN_TELLING_PIXEL_ROWS).then(|| matched as f32 / counted as f32)
+    };
+    let still = score(0)?;
+    if still == 1.0 {
+        return None;
+    }
+    let mut best: Option<(i32, f32)> = None;
+    for k in 1..=max_rows as i32 {
+        for rows in [k, -k] {
+            let Some(ratio) = score(i64::from(rows) * i64::from(cell_height)) else { continue };
+            if ratio >= SHIFT_MATCH && ratio > still && best.is_none_or(|(_, r)| ratio > r) {
+                best = Some((rows, ratio));
+            }
+        }
+    }
+    best.map(|(rows, _)| rows)
+}
+
+fn shift_sequence(shift: Shift, screen_rows: u32) -> String {
+    let region = format!("\x1b[{};{}r", shift.top_row + 1, screen_rows);
+    if shift.rows > 0 {
+        format!("{region}\x1b[{}S", shift.rows)
+    } else {
+        format!("{region}\x1b[{}T", -shift.rows)
+    }
+}
+
 fn place(out: &mut Vec<u8>, protocol: CellProtocol, rect: Rect, rgb: &[u8], cell: (u32, u32)) {
     let (col, row) = (rect.x / cell.0, rect.y / cell.1);
     if row >= TOP_ROWS_WITHOUT_REGION {
@@ -137,6 +212,64 @@ fn place(out: &mut Vec<u8>, protocol: CellProtocol, rect: Rect, rgb: &[u8], cell
 }
 
 impl Cells {
+    fn refresh(&mut self, canvas: &Canvas, premultiplied: bool, rect: Rect) {
+        let width = canvas.width as usize;
+        for y in rect.y..rect.y + rect.h {
+            let row = y as usize * width + rect.x as usize;
+            let rgb = over_black(&canvas.pixels[row * 4..(row + rect.w as usize) * 4], premultiplied);
+            self.shown[row * 3..row * 3 + rgb.len()].copy_from_slice(&rgb);
+        }
+    }
+
+    /// Looks for the page having scrolled by whole rows, so the terminal can move what it already shows.
+    fn find_shift(&self, canvas: &Canvas, premultiplied: bool, opaque: &[OpaqueArea], cell: (u32, u32)) -> Option<Shift> {
+        let (width, height) = (canvas.width, canvas.height);
+        let area = opaque.iter().map(|a| a.rect.clamped(width, height)).max_by_key(|r| r.area())?;
+        let top_row = area.y.div_ceil(cell.1);
+        let bottom = area.y + area.h;
+        // Scrolling a region that ends above the last row makes Termux drop images below it.
+        if top_row < TOP_ROWS_WITHOUT_REGION || bottom + cell.1 < height || (top_row + MIN_SHIFT_ROWS) * cell.1 > bottom {
+            return None;
+        }
+        let (x0, x1) = (area.x as usize, (area.x + area.w) as usize);
+        let w = width as usize;
+        let (mut old, mut new, mut telling) = (Vec::new(), Vec::new(), Vec::new());
+        for y in top_row * cell.1..bottom {
+            let row = y as usize * w;
+            let fresh = over_black(&canvas.pixels[(row + x0) * 4..(row + x1) * 4], premultiplied);
+            old.push(row_hash(&self.shown[(row + x0) * 3..(row + x1) * 3]));
+            new.push(row_hash(&fresh));
+            telling.push(fresh.chunks_exact(3).any(|p| p != &fresh[..3]));
+        }
+        let max_rows = (bottom - top_row * cell.1) / cell.1 / 2;
+        best_shift(&old, &new, &telling, cell.1, max_rows).map(|rows| Shift { top_row, rows })
+    }
+
+    /// Moves `shown` the way the terminal moves its cells and returns the rows that need painting again.
+    fn apply_shift(&mut self, shift: Shift, canvas: &Canvas, premultiplied: bool, cell: (u32, u32)) -> Vec<Rect> {
+        let (width, height) = (canvas.width, canvas.height);
+        let stride = width as usize * 3;
+        let band = shift.top_row as usize * cell.1 as usize * stride..height as usize * stride;
+        let moved = shift.rows.unsigned_abs() * cell.1;
+        let dy = moved as usize * stride;
+        let revealed = if shift.rows > 0 {
+            self.shown.copy_within(band.start + dy..band.end, band.start);
+            Rect { x: 0, y: height - moved, w: width, h: moved }
+        } else {
+            self.shown.copy_within(band.start..band.end - dy, band.start + dy);
+            Rect { x: 0, y: shift.top_row * cell.1, w: width, h: moved }
+        };
+        let mut repaint = vec![revealed];
+        if shift.rows > 0 {
+            // Scrolling lines up makes Termux drop the images drawn on the top row.
+            repaint.push(Rect { x: 0, y: 0, w: width, h: TOP_ROWS_WITHOUT_REGION * cell.1 });
+        }
+        for rect in &repaint {
+            self.refresh(canvas, premultiplied, *rect);
+        }
+        repaint
+    }
+
     fn region(&self, width: u32, rect: Rect) -> Vec<u8> {
         let mut out = Vec::with_capacity(rect.area() as usize * 3);
         for y in rect.y..rect.y + rect.h {
@@ -146,24 +279,48 @@ impl Cells {
         out
     }
 
-    fn take_changes(&mut self, canvas: &Canvas, premultiplied: bool, rect: Rect, cell: (u32, u32)) -> Option<Rect> {
+    /// Updates `shown` from the canvas within a cell aligned `rect` and returns the changed cells,
+    /// as runs along each row of cells so changes far apart on one row are not sent together.
+    fn take_changes(&mut self, canvas: &Canvas, premultiplied: bool, rect: Rect, cell: (u32, u32)) -> Vec<Rect> {
         let width = canvas.width as usize;
-        let mut changed: Option<Rect> = None;
-        for y in rect.y..rect.y + rect.h {
-            let src = (y as usize * width + rect.x as usize) * 4;
-            let rgb = over_black(&canvas.pixels[src..src + rect.w as usize * 4], premultiplied);
-            let dst = (y as usize * width + rect.x as usize) * 3;
-            let shown = &mut self.shown[dst..dst + rgb.len()];
-            let differs = |(a, b): (&[u8], &[u8])| a != b;
-            let Some(first) = rgb.chunks_exact(3).zip(shown.chunks_exact(3)).position(differs) else {
-                continue;
-            };
-            let last = rgb.chunks_exact(3).zip(shown.chunks_exact(3)).rposition(differs).unwrap_or(first);
-            let row = Rect { x: rect.x + first as u32, y, w: (last - first) as u32 + 1, h: 1 };
-            changed = Some(changed.map_or(row, |c| c.union(row)));
-            shown.copy_from_slice(&rgb);
+        let cols = (rect.w / cell.0) as usize;
+        let mut changes = Vec::new();
+        for row in 0..rect.h / cell.1 {
+            let mut changed = vec![false; cols];
+            for y in rect.y + row * cell.1..rect.y + (row + 1) * cell.1 {
+                let src = (y as usize * width + rect.x as usize) * 4;
+                let rgb = over_black(&canvas.pixels[src..src + rect.w as usize * 4], premultiplied);
+                let dst = (y as usize * width + rect.x as usize) * 3;
+                let shown = &mut self.shown[dst..dst + rgb.len()];
+                if rgb[..] == shown[..] {
+                    continue;
+                }
+                let span = cell.0 as usize * 3;
+                for (col, (new, old)) in rgb.chunks(span).zip(shown.chunks(span)).enumerate() {
+                    changed[col] |= new != old;
+                }
+                shown.copy_from_slice(&rgb);
+            }
+            let y = rect.y + row * cell.1;
+            let mut col = 0;
+            while col < cols {
+                if !changed[col] {
+                    col += 1;
+                    continue;
+                }
+                let mut end = col + 1;
+                while end < cols && changed[end..cols.min(end + RUN_GAP_CELLS)].iter().any(|&c| c) {
+                    end += 1;
+                }
+                while !changed[end - 1] {
+                    end -= 1;
+                }
+                let x = rect.x + col as u32 * cell.0;
+                changes.push(Rect { x, y, w: (end - col) as u32 * cell.0, h: cell.1 });
+                col = end;
+            }
         }
-        changed.map(|c| snap(c, cell, (canvas.width, canvas.height)))
+        changes
     }
 }
 
@@ -180,7 +337,9 @@ impl Terminal {
         self.io.out().write_all(query.as_bytes())?;
         self.io.out().flush()?;
         let reply = self.read_report(GRAPHICS_PROBE_TIMEOUT_MS, parse_graphics_reply)?;
-        let chosen = choose_cell_protocol(reply, Hints::of(env));
+        let hints = Hints::of(env);
+        let chosen = choose_cell_protocol(reply, hints);
+        self.cells.moves_images = hints.termux;
         crate::logging::info("terminal", format!("graphics reply {reply:?}, drawing with {}", chosen.map_or("kitty".to_string(), |p| format!("{p:?}"))));
         Ok(chosen)
     }
@@ -199,17 +358,30 @@ impl Terminal {
             self.cells.pixels_since_clear = 0;
             vec![Rect::sized(size.0, size.1)]
         } else {
-            let damage = frame
+            let mut damage: Vec<Rect> = frame
                 .changed
                 .iter()
                 .chain(frame.repainted)
                 .map(|r| snap(*r, cell, size))
                 .filter(|r| !r.is_empty())
                 .collect();
-            merge(damage)
+            let shift = self
+                .cells
+                .moves_images
+                .then(|| self.cells.find_shift(canvas, frame.premultiplied, frame.opaque, cell))
+                .flatten();
+            let mut repaint = Vec::new();
+            if let Some(shift) = shift {
+                out.extend_from_slice(shift_sequence(shift, size.1 / cell.1).as_bytes());
+                repaint = self.cells.apply_shift(shift, canvas, frame.premultiplied, cell);
+                let top = shift.top_row * cell.1;
+                damage.push(Rect { x: 0, y: top, w: size.0, h: size.1 - top });
+                crate::profiler::count("present.shifted_rows", || u64::from(shift.rows.unsigned_abs()));
+            }
+            let changes = merge(damage)
                 .into_iter()
-                .filter_map(|r| self.cells.take_changes(canvas, frame.premultiplied, r, cell))
-                .collect()
+                .flat_map(|r| self.cells.take_changes(canvas, frame.premultiplied, r, cell));
+            merge(repaint.into_iter().chain(changes).collect())
         };
         let mut pixels = 0;
         for rect in &rects {
@@ -279,6 +451,11 @@ mod tests {
         ]);
         assert_eq!(merged.len(), 2);
         assert!(merged.contains(&Rect { x: 0, y: 0, w: 20, h: 20 }));
+        let strip = Rect { x: 0, y: 90, w: 100, h: 10 };
+        let scrollbar = Rect { x: 90, y: 0, w: 10, h: 90 };
+        assert_eq!(merge(vec![strip, scrollbar]).len(), 2, "a strip and a scrollbar stay apart");
+        let crowd: Vec<Rect> = (0..MAX_RECTS as u32 + 5).map(|i| Rect { x: i * 30, y: 0, w: 10, h: 10 }).collect();
+        assert_eq!(merge(crowd).len(), MAX_RECTS);
     }
 
     #[test]
@@ -297,12 +474,67 @@ mod tests {
     #[test]
     fn only_cells_that_changed_since_the_last_frame_are_resent() {
         let mut canvas = Canvas::new(40, 40);
-        let mut cells = Cells { shown: over_black(&canvas.pixels, false), size: Some((40, 40)), pixels_since_clear: 0 };
+        let mut cells = Cells { shown: over_black(&canvas.pixels, false), size: Some((40, 40)), ..Cells::default() };
         let whole = Rect::sized(40, 40);
-        assert_eq!(cells.take_changes(&canvas, false, whole, (10, 10)), None);
+        assert_eq!(cells.take_changes(&canvas, false, whole, (10, 10)), vec![]);
         canvas.fill_rect(12, 25, 3, 2, [255, 0, 0, 255]);
-        assert_eq!(cells.take_changes(&canvas, false, whole, (10, 10)), Some(Rect { x: 10, y: 20, w: 10, h: 10 }));
-        assert_eq!(cells.take_changes(&canvas, false, whole, (10, 10)), None);
+        assert_eq!(cells.take_changes(&canvas, false, whole, (10, 10)), vec![Rect { x: 10, y: 20, w: 10, h: 10 }]);
+        assert_eq!(cells.take_changes(&canvas, false, whole, (10, 10)), vec![]);
         assert_eq!(&cells.region(40, Rect { x: 12, y: 25, w: 1, h: 1 }), &[255, 0, 0]);
+        let mut wide = Canvas::new(100, 20);
+        let mut cells = Cells { shown: over_black(&wide.pixels, false), size: Some((100, 20)), ..Cells::default() };
+        wide.fill_rect(0, 0, 1, 1, [9, 9, 9, 255]);
+        wide.fill_rect(99, 0, 1, 1, [9, 9, 9, 255]);
+        wide.fill_rect(25, 11, 1, 1, [9, 9, 9, 255]);
+        wide.fill_rect(45, 11, 1, 1, [9, 9, 9, 255]);
+        assert_eq!(
+            cells.take_changes(&wide, false, Rect::sized(100, 20), (10, 10)),
+            vec![Rect { x: 0, y: 0, w: 10, h: 10 }, Rect { x: 90, y: 0, w: 10, h: 10 }, Rect { x: 20, y: 10, w: 30, h: 10 }],
+            "changes far apart on a row stay apart, close ones join"
+        );
+    }
+
+    fn striped(width: u32, height: u32, offset: u32) -> Canvas {
+        let mut canvas = Canvas::new(width, height);
+        for y in 0..height {
+            let shade = ((y + offset) * 37 % 251) as u8;
+            canvas.fill_rect((y + offset) % 7, y, 3, 1, [shade, 255 - shade, 9, 255]);
+        }
+        canvas
+    }
+
+    #[test]
+    fn a_page_scrolled_by_whole_rows_is_moved_by_the_terminal() {
+        let cell = (10, 10);
+        let before = striped(40, 100, 0);
+        let mut cells = Cells { shown: over_black(&before.pixels, false), size: Some((40, 100)), moves_images: true, ..Cells::default() };
+        let page = [OpaqueArea { surface: None, rect: Rect { x: 0, y: 20, w: 40, h: 80 } }];
+        assert_eq!(cells.find_shift(&before, false, &page, cell), None, "nothing moved");
+
+        let mut after = striped(40, 100, 30);
+        after.fill_rect(0, 0, 40, 20, [1, 2, 3, 255]);
+        let shift = cells.find_shift(&after, false, &page, cell).expect("a three row shift");
+        assert_eq!(shift, Shift { top_row: 2, rows: 3 });
+        assert_eq!(shift_sequence(shift, 10), "\x1b[3;10r\x1b[3S");
+        let repaint = cells.apply_shift(shift, &after, false, cell);
+        assert_eq!(repaint, vec![Rect { x: 0, y: 70, w: 40, h: 30 }, Rect { x: 0, y: 0, w: 40, h: 20 }]);
+        let band = Rect { x: 0, y: 20, w: 40, h: 80 };
+        assert_eq!(cells.take_changes(&after, false, band, cell), vec![], "the moved rows already match");
+
+        let back = striped(40, 100, 10);
+        let shift = cells.find_shift(&back, false, &page, cell).expect("scrolling back up");
+        assert_eq!(shift.rows, -2);
+        assert_eq!(shift_sequence(shift, 10), "\x1b[3;10r\x1b[2T");
+    }
+
+    #[test]
+    fn blank_rows_do_not_vote_for_a_shift() {
+        let blank = vec![7u64; 40];
+        let mut telling = vec![false; 40];
+        assert_eq!(best_shift(&blank, &blank, &telling, 10, 2), None);
+        let old: Vec<u64> = (0..40).collect();
+        let new: Vec<u64> = (100..140).collect();
+        telling.iter_mut().for_each(|t| *t = true);
+        assert_eq!(best_shift(&old, &new, &telling, 10, 2), None, "unrelated content is not a shift");
     }
 }

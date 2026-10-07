@@ -1210,6 +1210,12 @@ impl Terminal {
         self.mouse_pixels
     }
 
+    /// Image cell terminals redraw every scroll step, so a wheel tick moves content by exactly one row
+    /// with no easing, which also follows a finger on Termux, where each row dragged is one tick.
+    pub fn scrolls_by_rows(&self) -> bool {
+        self.cell_protocol.is_some()
+    }
+
     pub fn frames_are_inline(&self) -> bool {
         self.transport == FrameTransport::Inline
     }

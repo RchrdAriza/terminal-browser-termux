@@ -181,18 +181,23 @@ pub(crate) fn sixel(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-pub(crate) fn iterm2(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
-    use image::ImageEncoder as _;
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+fn png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, png::EncodingError> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    // Measured on a phone: a third of the bytes of the fastest setting for a few more milliseconds,
+    // and every byte has to be parsed by the terminal.
+    encoder.set_filter(png::Filter::Up);
+    encoder.set_deflate_compression(png::DeflateCompression::Level(1));
+    encoder.write_header()?.write_image_data(rgb)?;
+    Ok(out)
+}
 
-    let mut png = Vec::new();
-    let encoded = crate::profiler::span("iterm2.png", || {
-        PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::Sub)
-            .write_image(rgb, width, height, image::ExtendedColorType::Rgb8)
-    });
-    if encoded.is_err() {
+pub(crate) fn iterm2(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let Ok(png) = crate::profiler::span("iterm2.png", || png(rgb, width, height)) else {
         return Vec::new();
-    }
+    };
     let payload = crate::profiler::span("iterm2.base64", || BASE64.encode(&png));
     let mut out = format!(
         "\x1b]1337;File=inline=1;size={};width={width}px;height={height}px;preserveAspectRatio=0:",
