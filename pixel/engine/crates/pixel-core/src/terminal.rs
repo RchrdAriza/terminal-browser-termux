@@ -315,6 +315,8 @@ pub struct Terminal {
     color_scheme_updates: bool,
     color_query: Option<ColorQuery>,
     kitty_keyboard: bool,
+    // Termux:Monet loses images when it rewraps the alternate screen on resize, then crashes drawing them
+    alternate_screen: bool,
 }
 
 #[derive(Default)]
@@ -500,10 +502,14 @@ impl Terminal {
         raw.make_raw();
         retry_intr(|| termios::tcsetattr(io.read_fd(), OptionalActions::Drain, &raw)).map_err(|e| step("tcsetattr", e.into()))?;
 
+        let alternate_screen = !env.var("TERMUX_VERSION").is_some_and(|v| !v.is_empty());
+        if alternate_screen {
+            io.out().write_all(b"\x1b[?1049h")?;
+        }
         // would prefer if they weren't magic and linked to some known doc on the internet
         // 1002 comes before 1003 for terminals like Termux that only know 1002 and turn touches into it
         io.out().write_all(
-            b"\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1004h\x1b[?2004h\x1b[?2048h\x1b[>1u",
+            b"\x1b[?25l\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1004h\x1b[?2004h\x1b[?2048h\x1b[>1u",
         )?; // enable many reporting modes so we get info about mouse/keyboard
         io.out().flush()?;
 
@@ -513,6 +519,7 @@ impl Terminal {
             wrapper,
             crate::herdr::HerdrTarget::from_env(&env),
         );
+        terminal.alternate_screen = alternate_screen;
         terminal.kitty_keyboard = terminal.probe_kitty_keyboard()?;
         if !terminal.kitty_keyboard {
             terminal.io.out().write_all(b"\x1b[>4;2m")?;
@@ -589,6 +596,7 @@ impl Terminal {
             color_scheme_updates: false,
             color_query: None,
             kitty_keyboard: false,
+            alternate_screen: false,
         }
     }
 
@@ -1732,8 +1740,13 @@ impl Drop for Terminal {
             let _ = self.io.out().write_all(b"\x1b[?2031l");
         }
         let _ = self.io.out().write_all(
-            b"\x1b[<u\x1b[?2048l\x1b[?2004l\x1b[?1004l\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25h\x1b[?1049l",
+            b"\x1b[<u\x1b[?2048l\x1b[?2004l\x1b[?1004l\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25h",
         );
+        let _ = self.io.out().write_all(if self.alternate_screen {
+            b"\x1b[?1049l".as_slice()
+        } else {
+            b"\x1b[r\x1b[2J\x1b[3J\x1b[H".as_slice()
+        });
         let _ = self.io.out().flush();
         if let Some(saved) = &self.saved {
             let _ = retry_intr(|| {
