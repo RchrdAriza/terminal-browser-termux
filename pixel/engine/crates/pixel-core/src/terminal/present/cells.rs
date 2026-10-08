@@ -10,6 +10,8 @@ const GRAPHICS_PROBE_TIMEOUT_MS: u64 = 1000;
 
 // Termux only frees replaced images every 30 seconds or when scrollback is cleared,
 // so after this many pixels we clear it and send a whole frame.
+// Clearing scrollback also drops the images still on screen, and Termux crashes drawing
+// a cell whose image is gone, so the screen is erased first.
 const CLEAR_AFTER_PIXELS: u64 = 24_000_000;
 const MAX_RECTS: usize = 24;
 const RUN_GAP_CELLS: usize = 4;
@@ -191,12 +193,14 @@ fn best_shift(old: &[u64], new: &[u64], telling: &[bool], cell_height: u32, max_
     best.map(|(rows, _)| rows)
 }
 
-fn shift_sequence(shift: Shift, screen_rows: u32) -> String {
-    let region = format!("\x1b[{};{}r", shift.top_row + 1, screen_rows);
+/// Deletes or inserts lines rather than scrolling a region, because Termux forgets the images on
+/// lines that scroll out of a region while other lines still show them, and Termux:Monet then crashes.
+fn shift_sequence(shift: Shift) -> String {
+    let at = format!("\x1b[r\x1b[{};1H", shift.top_row + 1);
     if shift.rows > 0 {
-        format!("{region}\x1b[{}S", shift.rows)
+        format!("{at}\x1b[{}M", shift.rows)
     } else {
-        format!("{region}\x1b[{}T", -shift.rows)
+        format!("{at}\x1b[{}L", -shift.rows)
     }
 }
 
@@ -227,7 +231,7 @@ impl Cells {
         let area = opaque.iter().map(|a| a.rect.clamped(width, height)).max_by_key(|r| r.area())?;
         let top_row = area.y.div_ceil(cell.1);
         let bottom = area.y + area.h;
-        // Scrolling a region that ends above the last row makes Termux drop images below it.
+        // Moving lines shifts everything down to the last row, so only a page reaching it can move.
         if top_row < TOP_ROWS_WITHOUT_REGION || bottom + cell.1 < height || (top_row + MIN_SHIFT_ROWS) * cell.1 > bottom {
             return None;
         }
@@ -259,15 +263,8 @@ impl Cells {
             self.shown.copy_within(band.start..band.end - dy, band.start + dy);
             Rect { x: 0, y: shift.top_row * cell.1, w: width, h: moved }
         };
-        let mut repaint = vec![revealed];
-        if shift.rows > 0 {
-            // Scrolling lines up makes Termux drop the images drawn on the top row.
-            repaint.push(Rect { x: 0, y: 0, w: width, h: TOP_ROWS_WITHOUT_REGION * cell.1 });
-        }
-        for rect in &repaint {
-            self.refresh(canvas, premultiplied, *rect);
-        }
-        repaint
+        self.refresh(canvas, premultiplied, revealed);
+        vec![revealed]
     }
 
     fn region(&self, width: u32, rect: Rect) -> Vec<u8> {
@@ -352,7 +349,7 @@ impl Terminal {
         let start = out.len();
         let resized = self.cells.size != Some(size);
         let rects = if resized || self.cells.pixels_since_clear >= CLEAR_AFTER_PIXELS {
-            out.extend_from_slice(if resized { b"\x1b[r\x1b[2J\x1b[3J".as_slice() } else { b"\x1b[3J".as_slice() });
+            out.extend_from_slice(b"\x1b[r\x1b[2J\x1b[3J");
             self.cells.shown = over_black(&canvas.pixels, frame.premultiplied);
             self.cells.size = Some(size);
             self.cells.pixels_since_clear = 0;
@@ -372,7 +369,7 @@ impl Terminal {
                 .flatten();
             let mut repaint = Vec::new();
             if let Some(shift) = shift {
-                out.extend_from_slice(shift_sequence(shift, size.1 / cell.1).as_bytes());
+                out.extend_from_slice(shift_sequence(shift).as_bytes());
                 repaint = self.cells.apply_shift(shift, canvas, frame.premultiplied, cell);
                 let top = shift.top_row * cell.1;
                 damage.push(Rect { x: 0, y: top, w: size.0, h: size.1 - top });
@@ -515,16 +512,16 @@ mod tests {
         after.fill_rect(0, 0, 40, 20, [1, 2, 3, 255]);
         let shift = cells.find_shift(&after, false, &page, cell).expect("a three row shift");
         assert_eq!(shift, Shift { top_row: 2, rows: 3 });
-        assert_eq!(shift_sequence(shift, 10), "\x1b[3;10r\x1b[3S");
+        assert_eq!(shift_sequence(shift), "\x1b[r\x1b[3;1H\x1b[3M");
         let repaint = cells.apply_shift(shift, &after, false, cell);
-        assert_eq!(repaint, vec![Rect { x: 0, y: 70, w: 40, h: 30 }, Rect { x: 0, y: 0, w: 40, h: 20 }]);
+        assert_eq!(repaint, vec![Rect { x: 0, y: 70, w: 40, h: 30 }]);
         let band = Rect { x: 0, y: 20, w: 40, h: 80 };
         assert_eq!(cells.take_changes(&after, false, band, cell), vec![], "the moved rows already match");
 
         let back = striped(40, 100, 10);
         let shift = cells.find_shift(&back, false, &page, cell).expect("scrolling back up");
         assert_eq!(shift.rows, -2);
-        assert_eq!(shift_sequence(shift, 10), "\x1b[3;10r\x1b[2T");
+        assert_eq!(shift_sequence(shift), "\x1b[r\x1b[3;1H\x1b[2L");
     }
 
     #[test]
