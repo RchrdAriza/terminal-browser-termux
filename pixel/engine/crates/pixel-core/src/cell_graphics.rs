@@ -198,15 +198,61 @@ pub(crate) fn iterm2(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     let Ok(png) = crate::profiler::span("iterm2.png", || png(rgb, width, height)) else {
         return Vec::new();
     };
-    let payload = crate::profiler::span("iterm2.base64", || BASE64.encode(&png));
+    iterm2_file(&png, width, height)
+}
+
+const SOFT_JPEG_QUALITY: u8 = 70;
+
+/// A JPEG at half the size, which the terminal stretches back over the same cells. Far fewer bytes
+/// to send and decode for video, at the cost of a blur that text should not have to live with.
+pub(crate) fn iterm2_soft(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let (small, small_width, small_height) = crate::profiler::span("iterm2.halve", || halve(rgb, width, height));
+    let mut jpeg = Vec::new();
+    let encoded = crate::profiler::span("iterm2.jpeg", || {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, SOFT_JPEG_QUALITY).encode(
+            &small,
+            small_width,
+            small_height,
+            image::ExtendedColorType::Rgb8,
+        )
+    });
+    if encoded.is_err() {
+        return iterm2(rgb, width, height);
+    }
+    iterm2_file(&jpeg, width, height)
+}
+
+fn iterm2_file(file: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let payload = crate::profiler::span("iterm2.base64", || BASE64.encode(file));
     let mut out = format!(
         "\x1b]1337;File=inline=1;size={};width={width}px;height={height}px;preserveAspectRatio=0:",
-        png.len()
+        file.len()
     )
     .into_bytes();
     out.extend_from_slice(payload.as_bytes());
     out.push(0x07);
     out
+}
+
+/// Averages each 2x2 block of pixels into one.
+fn halve(rgb: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
+    let (w, h) = (width as usize, height as usize);
+    let (half_w, half_h) = (w.div_ceil(2), h.div_ceil(2));
+    let mut out = vec![0u8; half_w * half_h * 3];
+    out.par_chunks_mut(half_w * 3).enumerate().for_each(|(y, row)| {
+        let rows = [2 * y, (2 * y + 1).min(h - 1)];
+        for x in 0..half_w {
+            let cols = [2 * x, (2 * x + 1).min(w - 1)];
+            for c in 0..3 {
+                let sum: u32 = rows
+                    .iter()
+                    .flat_map(|&sy| cols.iter().map(move |&sx| u32::from(rgb[(sy * w + sx) * 3 + c])))
+                    .sum();
+                row[x * 3 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    });
+    (out, half_w as u32, half_h as u32)
 }
 
 #[cfg(test)]
@@ -322,6 +368,25 @@ mod tests {
         let png = BASE64.decode(payload).unwrap();
         let image = image::load_from_memory(&png).unwrap().to_rgb8();
         assert_eq!(image.into_raw(), vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn soft_images_are_half_size_jpegs_stretched_over_the_same_pixels() {
+        let rgb: Vec<u8> = (0..40 * 21).flat_map(|_| [200, 100, 50]).collect();
+        let out = String::from_utf8(iterm2_soft(&rgb, 40, 21)).unwrap();
+        assert!(out.contains(";width=40px;height=21px;preserveAspectRatio=0:"));
+        let payload = out.split_once(':').unwrap().1.strip_suffix('\x07').unwrap();
+        let jpeg = BASE64.decode(payload).unwrap();
+        assert_eq!(image::guess_format(&jpeg).unwrap(), image::ImageFormat::Jpeg);
+        let image = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (20, 11));
+        assert!(image.pixels().all(|p| p.0.iter().zip([200, 100, 50]).all(|(&a, b)| a.abs_diff(b) <= 4)));
+    }
+
+    #[test]
+    fn halving_averages_each_block_and_keeps_odd_edges() {
+        let rgb = [0, 0, 0, 100, 100, 100, 7, 7, 7, 200, 200, 200, 0, 0, 0, 9, 9, 9];
+        assert_eq!(halve(&rgb, 3, 2), (vec![75, 75, 75, 8, 8, 8], 2, 1));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::io;
+use std::time::{Duration, Instant};
 
 use super::super::{SessionEnv, Terminal};
 use crate::canvas::{Canvas, Frame};
@@ -19,6 +20,12 @@ const TOP_ROWS_WITHOUT_REGION: u32 = 2;
 const MIN_SHIFT_ROWS: u32 = 4;
 const MIN_TELLING_PIXEL_ROWS: usize = 8;
 const SHIFT_MATCH: f32 = 0.9;
+// A cell sent again within MOVING_GAP of the last time, MOVING_STREAK times running, is playing
+// something like a video, and goes out blurry until it has been still for SHARPEN_AFTER.
+const MOVING_GAP: Duration = Duration::from_millis(250);
+const MOVING_STREAK: u8 = 4;
+const MIN_SOFT_PIXELS: u64 = 160 * 160;
+const SHARPEN_AFTER: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Default)]
 pub(crate) struct Cells {
@@ -27,6 +34,22 @@ pub(crate) struct Cells {
     pixels_since_clear: u64,
     // Termux keeps images in the cells they cover, so scrolling lines moves them too.
     moves_images: bool,
+    activity: Vec<CellActivity>,
+    grid: (u32, u32),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CellActivity {
+    sent_at: Option<Instant>,
+    streak: u8,
+    soft: bool,
+}
+
+impl CellActivity {
+    fn streak_at(&self, now: Instant) -> u8 {
+        let again = self.sent_at.is_some_and(|at| now.duration_since(at) <= MOVING_GAP);
+        if again { self.streak.saturating_add(1) } else { 1 }
+    }
 }
 
 /// Content below `top_row` moved up by `rows` lines, or down when negative.
@@ -204,7 +227,7 @@ fn shift_sequence(shift: Shift) -> String {
     }
 }
 
-fn place(out: &mut Vec<u8>, protocol: CellProtocol, rect: Rect, rgb: &[u8], cell: (u32, u32)) {
+fn place(out: &mut Vec<u8>, rect: Rect, image: &[u8], cell: (u32, u32)) {
     let (col, row) = (rect.x / cell.0, rect.y / cell.1);
     if row >= TOP_ROWS_WITHOUT_REGION {
         out.extend_from_slice(format!("\x1b[1;{row}r").as_bytes());
@@ -212,10 +235,93 @@ fn place(out: &mut Vec<u8>, protocol: CellProtocol, rect: Rect, rgb: &[u8], cell
         out.extend_from_slice(b"\x1b[r");
     }
     out.extend_from_slice(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
-    out.extend_from_slice(&protocol.encode(rgb, rect.w, rect.h));
+    out.extend_from_slice(image);
 }
 
 impl Cells {
+    fn reset_activity(&mut self, size: (u32, u32), cell: (u32, u32)) {
+        self.grid = (size.0.div_ceil(cell.0), size.1.div_ceil(cell.1));
+        self.activity = vec![CellActivity::default(); (self.grid.0 * self.grid.1) as usize];
+    }
+
+    fn cells_under(&self, rect: Rect, cell: (u32, u32)) -> Vec<usize> {
+        let (cols, rows) = self.grid;
+        let (left, top) = (rect.x / cell.0, rect.y / cell.1);
+        let right = (rect.x + rect.w).div_ceil(cell.0).min(cols);
+        let bottom = (rect.y + rect.h).div_ceil(cell.1).min(rows);
+        (top..bottom).flat_map(|row| (left..right).map(move |col| (row * cols + col) as usize)).collect()
+    }
+
+    /// Tells whether most of `rect` has kept changing frame after frame, counting a send at `now`.
+    fn moving(&self, rect: Rect, cell: (u32, u32), now: Instant) -> bool {
+        let under = self.cells_under(rect, cell);
+        let moving = under.iter().filter(|&&i| self.activity[i].streak_at(now) >= MOVING_STREAK).count();
+        !under.is_empty() && moving * 2 >= under.len()
+    }
+
+    fn note_sent(&mut self, rect: Rect, cell: (u32, u32), now: Instant) {
+        for i in self.cells_under(rect, cell) {
+            let activity = &mut self.activity[i];
+            activity.streak = activity.streak_at(now);
+            activity.sent_at = Some(now);
+        }
+    }
+
+    /// A video changes unevenly from row to row, so its changes arrive as many thin strips that are
+    /// cheaper to send blurry as one block.
+    fn join_moving(&self, rects: Vec<Rect>, cell: (u32, u32), now: Instant) -> Vec<Rect> {
+        let (mut moving, mut rest): (Vec<Rect>, Vec<Rect>) = rects.into_iter().partition(|r| self.moving(*r, cell, now));
+        'again: loop {
+            for i in 0..moving.len() {
+                for j in i + 1..moving.len() {
+                    let near = Rect { x: moving[i].x.saturating_sub(cell.0), y: moving[i].y.saturating_sub(cell.1), w: moving[i].w + 2 * cell.0, h: moving[i].h + 2 * cell.1 };
+                    if touch(near, moving[j]) {
+                        let other = moving.swap_remove(j);
+                        moving[i] = moving[i].union(other);
+                        continue 'again;
+                    }
+                }
+            }
+            break;
+        }
+        moving.append(&mut rest);
+        moving
+    }
+
+    fn mark_soft(&mut self, rect: Rect, cell: (u32, u32), soft: bool) {
+        for i in self.cells_under(rect, cell) {
+            self.activity[i].soft = soft;
+        }
+    }
+
+    fn sharpen_at(&self) -> Option<Instant> {
+        self.activity.iter().filter(|a| a.soft).filter_map(|a| a.sent_at).min().map(|at| at + SHARPEN_AFTER)
+    }
+
+    /// The blurry cells that have been still long enough, as runs along each row of cells.
+    fn take_still_soft(&mut self, cell: (u32, u32), now: Instant) -> Vec<Rect> {
+        let (cols, rows) = self.grid;
+        let still = |a: &CellActivity| a.soft && a.sent_at.is_some_and(|at| now.duration_since(at) >= SHARPEN_AFTER);
+        let mut runs = Vec::new();
+        for row in 0..rows {
+            let line = &mut self.activity[(row * cols) as usize..((row + 1) * cols) as usize];
+            let mut col = 0;
+            while col < cols {
+                if !still(&line[col as usize]) {
+                    col += 1;
+                    continue;
+                }
+                let start = col;
+                while col < cols && still(&line[col as usize]) {
+                    line[col as usize].soft = false;
+                    col += 1;
+                }
+                runs.push(Rect { x: start * cell.0, y: row * cell.1, w: (col - start) * cell.0, h: cell.1 });
+            }
+        }
+        runs
+    }
+
     fn refresh(&mut self, canvas: &Canvas, premultiplied: bool, rect: Rect) {
         let width = canvas.width as usize;
         for y in rect.y..rect.y + rect.h {
@@ -256,11 +362,16 @@ impl Cells {
         let band = shift.top_row as usize * cell.1 as usize * stride..height as usize * stride;
         let moved = shift.rows.unsigned_abs() * cell.1;
         let dy = moved as usize * stride;
+        let cols = self.grid.0 as usize;
+        let rows = shift.rows.unsigned_abs() as usize * cols;
+        let activity = shift.top_row as usize * cols..self.activity.len();
         let revealed = if shift.rows > 0 {
             self.shown.copy_within(band.start + dy..band.end, band.start);
+            self.activity.copy_within(activity.start + rows..activity.end, activity.start);
             Rect { x: 0, y: height - moved, w: width, h: moved }
         } else {
             self.shown.copy_within(band.start..band.end - dy, band.start + dy);
+            self.activity.copy_within(activity.start..activity.end - rows, activity.start + rows);
             Rect { x: 0, y: shift.top_row * cell.1, w: width, h: moved }
         };
         self.refresh(canvas, premultiplied, revealed);
@@ -347,12 +458,16 @@ impl Terminal {
         let canvas = frame.canvas;
         let size = (canvas.width, canvas.height);
         let start = out.len();
-        let resized = self.cells.size != Some(size);
+        let now = Instant::now();
+        let resized = self.cells.size != Some(size) || self.cells.grid != (size.0.div_ceil(cell.0), size.1.div_ceil(cell.1));
         let rects = if resized || self.cells.pixels_since_clear >= CLEAR_AFTER_PIXELS {
             out.extend_from_slice(b"\x1b[r\x1b[2J\x1b[3J");
             self.cells.shown = over_black(&canvas.pixels, frame.premultiplied);
             self.cells.size = Some(size);
             self.cells.pixels_since_clear = 0;
+            if resized {
+                self.cells.reset_activity(size, cell);
+            }
             vec![Rect::sized(size.0, size.1)]
         } else {
             let mut damage: Vec<Rect> = frame
@@ -378,13 +493,31 @@ impl Terminal {
             let changes = merge(damage)
                 .into_iter()
                 .flat_map(|r| self.cells.take_changes(canvas, frame.premultiplied, r, cell));
-            merge(repaint.into_iter().chain(changes).collect())
+            let changes: Vec<Rect> = repaint.into_iter().chain(changes).collect();
+            let sharpen = if changes.is_empty() { Vec::new() } else { self.cells.take_still_soft(cell, now) };
+            let rects = merge(changes.into_iter().chain(sharpen).collect());
+            self.cells.join_moving(rects, cell, now)
         };
+        self.send_cells(protocol, &rects, now, out);
+        Ok(out.len() - start)
+    }
+
+    fn send_cells(&mut self, protocol: CellProtocol, rects: &[Rect], now: Instant, out: &mut Vec<u8>) {
+        let cell = self.cell();
+        let Some(size) = self.cells.size else { return };
         let mut pixels = 0;
-        for rect in &rects {
+        for rect in rects {
+            let soft = self.cells.moving(*rect, cell, now) && protocol == CellProtocol::Iterm2 && rect.area() >= MIN_SOFT_PIXELS;
+            self.cells.note_sent(*rect, cell, now);
+            self.cells.mark_soft(*rect, cell, soft);
             for piece in scroll_safe_pieces(*rect, cell.1) {
                 let rgb = self.cells.region(size.0, piece);
-                place(out, protocol, piece, &rgb, cell);
+                let image = if soft {
+                    crate::cell_graphics::iterm2_soft(&rgb, piece.w, piece.h)
+                } else {
+                    protocol.encode(&rgb, piece.w, piece.h)
+                };
+                place(out, piece, &image, cell);
                 pixels += piece.area();
             }
         }
@@ -393,7 +526,23 @@ impl Terminal {
         }
         self.cells.pixels_since_clear += pixels;
         crate::profiler::count("present.pixels", || pixels);
-        Ok(out.len() - start)
+    }
+
+    pub(in crate::terminal) fn cells_sharpen_at(&self) -> Option<Instant> {
+        self.cells.sharpen_at()
+    }
+
+    /// Sends sharp images over the blurry ones once what they show has stopped moving.
+    pub(in crate::terminal) fn sharpen_still_cells(&mut self, protocol: CellProtocol) -> io::Result<()> {
+        let now = Instant::now();
+        let still = self.cells.take_still_soft(self.cell(), now);
+        if still.is_empty() {
+            return Ok(());
+        }
+        let mut out = Vec::new();
+        self.send_cells(protocol, &merge(still), now, &mut out);
+        self.write_synchronized(&out)?;
+        Ok(())
     }
 }
 
@@ -464,7 +613,7 @@ mod tests {
             vec![Rect { x: 0, y: 20, w: 10, h: 20 }, Rect { x: 0, y: 40, w: 10, h: 80 }]
         );
         let mut out = Vec::new();
-        place(&mut out, CellProtocol::Sixel, Rect { x: 30, y: 60, w: 10, h: 20 }, &[0; 600], (10, 20));
+        place(&mut out, Rect { x: 30, y: 60, w: 10, h: 20 }, &CellProtocol::Sixel.encode(&[0; 600], 10, 20), (10, 20));
         assert!(out.starts_with(b"\x1b[1;3r\x1b[4;4H\x1bP"));
     }
 
@@ -522,6 +671,38 @@ mod tests {
         let shift = cells.find_shift(&back, false, &page, cell).expect("scrolling back up");
         assert_eq!(shift.rows, -2);
         assert_eq!(shift_sequence(shift), "\x1b[r\x1b[3;1H\x1b[2L");
+    }
+
+    #[test]
+    fn cells_that_keep_changing_go_soft_until_they_hold_still() {
+        let cell = (10, 10);
+        let mut cells = Cells::default();
+        cells.reset_activity((40, 40), cell);
+        let video = Rect { x: 0, y: 0, w: 20, h: 20 };
+        let start = Instant::now();
+        let mut at = start;
+        for _ in 1..MOVING_STREAK {
+            assert!(!cells.moving(video, cell, at), "one change or a few is not playing anything");
+            cells.note_sent(video, cell, at);
+            at += Duration::from_millis(40);
+        }
+        assert!(cells.moving(video, cell, at));
+        let strips = vec![Rect { x: 0, y: 0, w: 10, h: 10 }, Rect { x: 0, y: 10, w: 20, h: 10 }, Rect { x: 30, y: 30, w: 10, h: 10 }];
+        assert_eq!(
+            cells.join_moving(strips, cell, at),
+            vec![video, Rect { x: 30, y: 30, w: 10, h: 10 }],
+            "strips of a moving area join, a still one elsewhere does not"
+        );
+        cells.note_sent(video, cell, at);
+        cells.mark_soft(video, cell, true);
+        assert_eq!(cells.sharpen_at(), Some(at + SHARPEN_AFTER));
+        assert_eq!(cells.take_still_soft(cell, at + Duration::from_millis(100)), vec![], "still moving a moment ago");
+        assert_eq!(
+            cells.take_still_soft(cell, at + SHARPEN_AFTER),
+            vec![Rect { x: 0, y: 0, w: 20, h: 10 }, Rect { x: 0, y: 10, w: 20, h: 10 }]
+        );
+        assert_eq!(cells.sharpen_at(), None);
+        assert!(!cells.moving(video, cell, at + SHARPEN_AFTER), "a pause starts the count over");
     }
 
     #[test]
