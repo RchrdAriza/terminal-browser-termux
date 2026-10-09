@@ -21,6 +21,8 @@ UBUNTU_PACKAGES=(
   libgtk-3-0t64 libgdk-pixbuf-2.0-0 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64
   libcups2t64 libavahi-client3 libavahi-common3 libnss3 libnspr4 libudev1 libxdamage1
   libjpeg8 libjpeg-turbo8 libxml2 libicu74
+  libpulse0 libsndfile1 libasyncns0 libapparmor1 libsystemd0 libgcrypt20 libgpg-error0
+  libflac12t64 libvorbis0a libvorbisenc2 libogg0 libopus0 libmpg123-0t64 libmp3lame0
 )
 
 if [ -z "${TERMUX_VERSION:-}" ] && [[ "${PREFIX:-}" != /data/data/com.termux/* ]]; then
@@ -35,7 +37,7 @@ fi
 if [ ! -f "$PREFIX/etc/apt/sources.list.d/glibc.list" ]; then
   pkg install -y glibc-repo
 fi
-pkg install -y "${GLIBC_PACKAGES[@]}"
+pkg install -y "${GLIBC_PACKAGES[@]}" pulseaudio
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -70,7 +72,14 @@ for binary in pixel chrome_crashpad_handler; do
   "$GLIBC/bin/patchelf" --force-rpath --set-rpath "$LIBS" "$APP/electron/$binary"
 done
 
-missing="$(env -u LD_PRELOAD "$GLIBC/lib/ld-linux-aarch64.so.1" --list "$APP/electron/pixel" 2>&1 | awk '/not found|error while loading/' || true)"
+# Ubuntu's libpulse looks for its private libpulsecommon under /usr, which is not where we unpacked it.
+LIBPULSE="$UBUNTU_ROOT/usr/lib/aarch64-linux-gnu/libpulse.so.0"
+"$GLIBC/bin/patchelf" --remove-rpath "$LIBPULSE"
+"$GLIBC/bin/patchelf" --force-rpath --set-rpath "\$ORIGIN/pulseaudio:\$ORIGIN:$GLIBC/lib" "$LIBPULSE"
+
+missing="$(for binary in "$APP/electron/pixel" "$LIBPULSE"; do
+  env -u LD_PRELOAD "$GLIBC/lib/ld-linux-aarch64.so.1" --list "$binary" 2>&1
+done | awk '/not found|error while loading/' || true)"
 if [ -n "$missing" ]; then
   echo "electron still misses libraries:" >&2
   echo "$missing" >&2

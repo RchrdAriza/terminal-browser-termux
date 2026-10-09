@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -15,5 +16,18 @@ export function termuxEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     ...env,
     TMPDIR: env.TMPDIR ?? path.join(prefix, "tmp"),
     FONTCONFIG_FILE: env.FONTCONFIG_FILE ?? (fs.existsSync(fonts) ? fonts : undefined),
+    PULSE_SERVER: env.PULSE_SERVER ?? termuxPulseServer(),
   };
+}
+
+// Termux's pulseaudio puts its socket in a random directory that electron's glibc libpulse cannot find on its own.
+function termuxPulseServer(): string | undefined {
+  const info = () => spawnSync("pactl", ["info"], { encoding: "utf8" });
+  let result = info();
+  if (result.status !== 0) {
+    spawnSync("pulseaudio", ["--start"]);
+    result = info();
+  }
+  const socket = /^Server String: (.+)$/m.exec(result.stdout ?? "")?.[1];
+  return socket ? `unix:${socket}` : undefined;
 }
