@@ -322,7 +322,7 @@ fn paint_node(
                 canvas.push_clip(rect.x, rect.y, rect.w, rect.h);
             }
             let base_x = rect.x + padding.0;
-            let origin = (base_x - scroll_x, rect.y + padding.1);
+            let origin = (base_x - scroll_x, rect.y + padding.1 + node.text_offset_y);
             let wrap = node
                 .style
                 .wrap

@@ -29,7 +29,8 @@ import type { ViewEntry } from "./registry";
 import { WebView } from "./webview";
 import type { WebViewHandle, WebViewProps } from "./webview";
 import { CellZoomFollower, hostDisplayScale } from "./scale";
-import { detect } from "./terminal";
+import { UNSUPPORTED_ENV, detect } from "./terminal";
+import type { Terminal } from "./terminal";
 import { initOffscreenMode } from "./web/offscreen";
 import {
   broadcastTheme,
@@ -54,6 +55,7 @@ export interface RootOptions
   onKey?: (event: EngineKeyEvent) => boolean | void;
   onQuit?: (view: WebViewHandle | null) => void;
   onExit?: (code: number) => void;
+  onUnsupportedTerminal?: (terminal: Terminal | null) => string;
 }
 
 export type LoadOptions = Omit<WebViewProps, "src" | "style" | "hidden" | "autoFocus">;
@@ -111,6 +113,12 @@ export function createRoot(options: RootOptions = {}): Root {
   }
   const env = options.sessionEnv ?? process.env;
   const terminal = detect(env);
+  if (env[UNSUPPORTED_ENV]) {
+    const message = options.onUnsupportedTerminal?.(terminal) ?? "pixel: this terminal doesn't support graphics\n";
+    fs.writeSync(1, message);
+    app.exit(1);
+    throw new Error("this terminal doesn't support graphics");
+  }
 
   const tty = options.tty ?? env.PIXEL_TTY ?? ownTty();
 
@@ -140,10 +148,6 @@ export function createRoot(options: RootOptions = {}): Root {
       }
     }
     flushSessions();
-    try {
-      // wait whats going on here 
-      engineRoot.setPointerShape("text");
-    } catch {}
     try {
       engineRoot.stop();
     } catch {}

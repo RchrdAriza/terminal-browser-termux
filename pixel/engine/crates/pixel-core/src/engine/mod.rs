@@ -313,6 +313,7 @@ pub struct Engine {
     inspect_hover: Option<NodeId>,
     highlight: Option<(usize, NodeId, HighlightArea)>,
     hover_target: Option<(usize, NodeId)>,
+    pointer_shape: Option<String>,
     emit_logs: bool,
     log_cursor: u64,
     drag: Option<(usize, DragTarget)>,
@@ -433,6 +434,7 @@ impl Engine {
             inspect_hover: None,
             highlight: None,
             hover_target: None,
+            pointer_shape: None,
             emit_logs: false,
             log_cursor: 0,
             drag: None,
@@ -633,6 +635,7 @@ impl Engine {
         wait: Option<Duration>,
     ) -> io::Result<Option<crate::terminal::Event>> {
         self.frame()?;
+        self.sync_pointer_shape();
         self.send_due_color_request()?;
         let mut first_wait = if self.frame_deferred && let Some(due) = self.frame_due {
             Some(due.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)))
@@ -722,6 +725,7 @@ impl Engine {
         if !input_pending || self.last_frame.elapsed() >= PAINT_INTERVAL_WITH_INPUT_PENDING {
             self.frame()?;
         }
+        self.sync_pointer_shape();
         self.drain_logs(&mut out);
         Ok(out)
     }
@@ -896,6 +900,7 @@ impl Engine {
 
     pub fn retarget(&mut self, target: Retarget) -> io::Result<()> {
         self.term.retarget(target, self.session_env.clone())?;
+        self.pointer_shape = None;
         self.native = if self.term.is_hosted() && !self.term.is_embedded() {
             None
         } else {

@@ -14,6 +14,7 @@ export const SCHEME = "terminal-browser";
 // from disk can run its scripts but cannot read other local files
 export const DOC_SCHEME = "terminal-browser-file";
 export const START_URL = `${SCHEME}://start`;
+export const HOME_URL = "https://terminal-browser.com";
 
 export interface PageContext {
   cwd: string;

@@ -145,9 +145,6 @@ enum Op {
     SetKeyCapture {
         keys: Vec<String>,
     },
-    SetPointerShape {
-        shape: String,
-    },
     SetTitle {
         text: String,
     },
@@ -542,6 +539,7 @@ struct StyleDto {
     selectable: Option<bool>,
     selection_color: Option<Color>,
     selection_mode: Option<String>,
+    pointer_shape: Option<String>,
 }
 
 fn dimension(dto: Option<DimensionDto>) -> Dimension {
@@ -650,6 +648,7 @@ impl StyleDto {
                 Some("unified") => SelectionMode::Unified,
                 _ => SelectionMode::Text,
             },
+            pointer_shape: self.pointer_shape,
         }
     }
 }
@@ -879,9 +878,6 @@ fn apply_op(
         }
         Op::RegisterFont { .. } => unreachable!("handled before the per-view bindings"),
         Op::SetKeyCapture { keys } => engine.key_capture = keys,
-        Op::SetPointerShape { shape } => {
-            let _ = engine.term.set_pointer_shape(&shape);
-        }
         Op::SetTitle { text } => engine.set_title(&text),
         Op::Retarget { tty, wrapper, host } => {
             use serde_json::json;

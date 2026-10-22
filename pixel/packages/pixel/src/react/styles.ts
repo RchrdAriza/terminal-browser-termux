@@ -30,6 +30,13 @@ export interface ScrollbarStyle {
 
 export type BorderSide = [width: number, color: Color];
 
+export type PointerShape =
+  | "default" | "pointer" | "text" | "crosshair" | "wait" | "help" | "progress"
+  | "cell" | "vertical-text" | "context-menu" | "alias" | "copy" | "move"
+  | "no-drop" | "not-allowed" | "grab" | "grabbing" | "all-scroll" | "zoom-in" | "zoom-out"
+  | "e-resize" | "n-resize" | "ne-resize" | "nw-resize" | "s-resize" | "se-resize"
+  | "sw-resize" | "w-resize" | "ns-resize" | "ew-resize" | "nesw-resize" | "nwse-resize";
+
 export interface GradientStop {
   at: number;
   color: Color;
@@ -85,6 +92,7 @@ export interface Style {
    * makes the highlight extend to the entire available space of the selection container instead of just the text
    */
   selectionMode?: "text" | "unified";
+  pointerShape?: PointerShape;
 }
 
 export function parseColor(color: Color | undefined): Rgba | undefined {
@@ -159,6 +167,7 @@ export function serializeStyle(style: Style): Record<string, unknown> {
     opaque: style.opaque,
     selectionColor: parseColor(style.selectionColor),
     selectionMode: style.selectionMode,
+    pointerShape: style.pointerShape,
     scrollbar: style.scrollbar && {
       width: style.scrollbar.width,
       hoverWidth: style.scrollbar.hoverWidth,

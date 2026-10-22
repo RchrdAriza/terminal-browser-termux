@@ -53,7 +53,7 @@ const HAS_AUTHORITY = /^[a-z][a-z0-9+.-]*:\/\//i;
 const SCHEMES_WITHOUT_HOST = /^(?:data|mailto|tel|about|blob|chrome|view-source):/i;
 
 export function displayUrl(url: string): string {
-  if (!url || url === "about:blank") return "New tab";
+  if (!url) return "about:blank";
   if (url.startsWith("file://")) return homeRelative(url);
   return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }

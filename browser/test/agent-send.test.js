@@ -34,7 +34,7 @@ test("an agent pane gets the text, then the image on the clipboard, then the pas
     calls.map((call) => call[0]),
     ["sendText", "copyToClipboard", "pasteKey", "focusPane"],
   );
-  assert.equal(calls[0][2], "> <Button>\n\n");
+  assert.equal(calls[0][2], "<Button>\n\n");
   assert.equal(calls[2][1], "2");
 });
 
@@ -46,7 +46,7 @@ test("a terminal that cannot press keys gets the file path inside the text inste
     calls.map((call) => call[0]),
     ["sendText", "focusPane"],
   );
-  assert.equal(calls[0][2], `> <Button>\n${FILE}\n\n`);
+  assert.equal(calls[0][2], `<Button>\n${FILE}\n\n`);
 });
 
 test("a plain shell never receives a paste key", async () => {
@@ -57,7 +57,7 @@ test("a plain shell never receives a paste key", async () => {
     calls.map((call) => call[0]),
     ["sendText", "focusPane"],
   );
-  assert.equal(calls[0][2], `'> <Button> ${FILE}'`);
+  assert.equal(calls[0][2], `'<Button> ${FILE}'`);
 });
 
 test("without a screenshot nothing touches the clipboard", async () => {

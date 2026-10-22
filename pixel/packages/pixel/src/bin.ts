@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { announceGuest, findOwner, waitForOwners } from "./instances";
 import { apparmorSetup, linuxSandboxError } from "./sandbox";
-import { TERMUX_CHROMIUM_FLAGS, checkTerminal, detect, inTermux, termuxEnv, unsupportedGraphicsMessage } from "./terminal";
+import { TERMUX_CHROMIUM_FLAGS, UNSUPPORTED_ENV, checkTerminal, detect, inTermux, termuxEnv } from "./terminal";
 
 function fail(message: string): never {
   process.stderr.write(`pixel: ${message}\n`);
@@ -95,15 +95,12 @@ async function main(): Promise<number> {
   const tty = process.env.PIXEL_TTY ?? ownTty();
   const owner = findOwner(tty);
   const announced = owner ? announceGuest(owner, appName(appDir(entry))) : null;
+  let unsupported = false;
   if (!owner && !process.env.PIXEL_EMBED) {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       fail("tty required");
     }
-    const check = await checkTerminal(detect());
-    if (check.graphics === "unsupported") {
-      process.stderr.write(unsupportedGraphicsMessage(process.stderr.isTTY === true));
-      return 1;
-    }
+    unsupported = (await checkTerminal(detect())).graphics === "unsupported";
   }
 
   const electron = electronBinary();
@@ -128,9 +125,12 @@ async function main(): Promise<number> {
   const env = inTermux() ? termuxEnv(process.env) : { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   env.PIXEL_TTY = tty;
+  if (unsupported) env[UNSUPPORTED_ENV] = "1";
+  else delete env[UNSUPPORTED_ENV];
   if (announced) env.PIXEL_PANE = announced.pane;
   else delete env.PIXEL_PANE;
-  const stderr = fs.openSync(logFile(appDir(entry)), "a");
+  const log = logFile(appDir(entry));
+  const stderr = fs.openSync(log, "a");
   const child = spawn(electron, [bootstrap, entry, ...chromiumArgs, ...appArgs], {
     stdio: ["inherit", "inherit", stderr],
     env,
@@ -151,7 +151,12 @@ async function main(): Promise<number> {
       process.stderr.write(`pixel: could not start electron: ${error.message}\n`);
       resolve(1);
     });
-    child.on("exit", (code, signal) => resolve(code ?? (signal ? 128 : 0)));
+    child.on("exit", (code, signal) => {
+      if (code && !unsupported) {
+        process.stderr.write(`pixel crashed (exit code ${code}). Full logs: ${log}\n`);
+      }
+      resolve(code ?? (signal ? 128 : 0));
+    });
   });
   await waitForOwners(tty);
   return exited;

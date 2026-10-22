@@ -94,7 +94,7 @@ export type {
   ShapeStroke,
   PathProps,
 } from "./reconciler-config";
-export type { Color, Edges, InsetEdges, InsetValue, ScrollbarStyle, Style } from "./styles";
+export type { Color, Edges, InsetEdges, InsetValue, PointerShape, ScrollbarStyle, Style } from "./styles";
 export type {
   DiffEmphasis,
   DiffRow,
@@ -121,6 +121,8 @@ export type {
 } from "./surface";
 export { Markdown } from "./markdown";
 export type { MarkdownProps, MarkdownTheme } from "./markdown";
+export { Link } from "./link";
+export type { LinkProps } from "./link";
 export { openDevtools, closeDevtools, toggleDevtools, requestLayout, engineOp };
 
 /**
@@ -134,12 +136,6 @@ export function setKeyCapture(keys: string[]): void {
   bridge.flush();
 }
 
-
-export function setPointerShape(shape: string): void {
-  const bridge = getBridge();
-  bridge.push(APP_VIEW, { op: "setPointerShape", shape });
-  bridge.flush();
-}
 
 export function requestClipboardImage(): void {
   const bridge = getBridge();
@@ -215,7 +211,6 @@ export interface PixelRoot {
   // nudge resize is a ridiculous api
   nudgeResize(): void;
   queryLayout(): void;
-  setPointerShape(shape: string): void;
   setClearColor(color: Rgba): void;
   setKeyCapture(keys: string[]): void;
   requestClipboardImage(): void;
@@ -788,10 +783,6 @@ export function createRoot(options: RootOptions = {}): PixelRoot {
     },
     queryLayout() {
       bridge.push(APP_VIEW, { op: "queryLayout" });
-      bridge.flush();
-    },
-    setPointerShape(shape: string) {
-      bridge.push(APP_VIEW, { op: "setPointerShape", shape });
       bridge.flush();
     },
     setClearColor(color: Rgba) {

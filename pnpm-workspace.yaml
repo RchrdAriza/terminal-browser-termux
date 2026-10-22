@@ -4,6 +4,7 @@ packages:
   - shared
   - monitor
   - pixel/packages/*
+  - pixel/packages/create-pixel/template
   - pixel/packages/native/*
   - pixel/examples/*
 linkWorkspacePackages: true

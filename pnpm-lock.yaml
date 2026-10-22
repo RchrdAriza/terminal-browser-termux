@@ -87,6 +87,25 @@ importers:
         specifier: ^5.5.0
         version: 5.9.3
 
+  pixel/examples/activity:
+    dependencies:
+      '@zenbu-labs/pixel':
+        specifier: workspace:*
+        version: link:../../packages/pixel
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
   pixel/examples/composed:
     dependencies:
       '@zenbu-labs/pixel':
@@ -204,6 +223,50 @@ importers:
         specifier: ^5.5.0
         version: 5.9.3
 
+  pixel/examples/zed:
+    dependencies:
+      '@zenbu-labs/pixel':
+        specifier: workspace:*
+        version: link:../../packages/pixel
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
+  pixel/packages/create-pixel:
+    dependencies:
+      '@clack/prompts':
+        specifier: ^1.8.1
+        version: 1.8.1
+
+  pixel/packages/create-pixel/template:
+    dependencies:
+      '@zenbu-labs/pixel':
+        specifier: workspace:*
+        version: link:../../pixel
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
   pixel/packages/native/darwin-arm64: {}
 
   pixel/packages/native/darwin-x64: {}
@@ -273,6 +336,14 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@clack/core@1.5.1':
+    resolution: {integrity: sha512-iHTrHA8MtVuLl2TfZySmcKv1qO2PoyC9Z7pfSDozEuV5vtY3/wcOPKJXlqJ5Oq2Cx5DDGQGAMVx6HZfRRoVEbQ==}
+    engines: {node: '>= 20.12.0'}
+
+  '@clack/prompts@1.8.1':
+    resolution: {integrity: sha512-dlT1m5e/0yUL0kRNcQn7yGLVThkgbB0Ga/1AmfDDC/8ik6AIiSf2QLQO2zPYvefsHP0aFgxO93cVLCCfDp7kzQ==}
+    engines: {node: '>= 20.12.0'}
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
@@ -983,6 +1054,15 @@ packages:
     resolution: {integrity: sha512-XYfuKMvj4O35f/pOXLObndIRvyQ+/+6AhODh+OKWj9S9498pHHn/IMszH+gt0fBCRWMNfk1ZSp5x3AifmnI2vg==}
     engines: {node: '>=6'}
 
+  fast-string-truncated-width@3.0.3:
+    resolution: {integrity: sha512-0jjjIEL6+0jag3l2XWWizO64/aZVtpiGE3t0Zgqxv0DPuxiMjvB3M24fCyhZUO4KomJQPj3LTSUnDP3GpdwC0g==}
+
+  fast-string-width@3.0.2:
+    resolution: {integrity: sha512-gX8LrtNEI5hq8DVUfRQMbr5lpaS4nMIWV+7XEbXk2b8kiQIizgnlr12B4dA3ZEx3308ze0O4Q1R+cHts8kyUJg==}
+
+  fast-wrap-ansi@0.2.2:
+    resolution: {integrity: sha512-7F2Fl+TjRSenLqlU3UjSH0iyqopqoZIu7eZVpEirP2g1GtWa2G/ecEmBdgz31+Mxr+ELclgg6sokpSFIQiZ02Q==}
+
   file-uri-to-path@1.0.0:
     resolution: {integrity: sha512-0Zt+s3L7Vf1biwWZ29aARiVYLx7iMGnEUl9x33fbB/j3jR81u/O2LbqK+Bm1CDSNDKVtJ/YjwY7TUd5SkeLQLw==}
 
@@ -1334,6 +1414,18 @@ packages:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
+
+  '@clack/core@1.5.1':
+    dependencies:
+      fast-wrap-ansi: 0.2.2
+      sisteransi: 1.0.5
+
+  '@clack/prompts@1.8.1':
+    dependencies:
+      '@clack/core': 1.5.1
+      fast-string-width: 3.0.2
+      fast-wrap-ansi: 0.2.2
+      sisteransi: 1.0.5
 
   '@drizzle-team/brocli@0.10.2': {}
 
@@ -1819,6 +1911,16 @@ snapshots:
 
   expand-template@2.0.3:
     optional: true
+
+  fast-string-truncated-width@3.0.3: {}
+
+  fast-string-width@3.0.2:
+    dependencies:
+      fast-string-truncated-width: 3.0.3
+
+  fast-wrap-ansi@0.2.2:
+    dependencies:
+      fast-string-width: 3.0.2
 
   file-uri-to-path@1.0.0:
     optional: true

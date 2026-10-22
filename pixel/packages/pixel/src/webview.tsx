@@ -27,6 +27,7 @@ import type {
   EngineKeyEvent,
   NodeHandle,
   PointerEvent,
+  PointerShape,
   Style,
   Surface,
   SurfaceCapture,
@@ -125,7 +126,6 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
   const stateRef = useRef<WebViewState>(initialWebViewState(props.src));
   const propsRef = useRef(props);
   propsRef.current = props;
-  const hover = useRef({ page: false, popup: false, devtools: false, divider: false });
   const dragging = useRef(false);
   const lastDragResize = useRef(0);
   const pendingInspect = useRef<{ x: number; y: number } | null>(null);
@@ -133,12 +133,15 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
   const changeListeners = useRef(new Set<(state: WebViewState) => void>());
 
   const [popup, setPopup] = useState<PopupView | null>(null);
+  const [pointerShapes, setPointerShapes] = useState<Record<"page" | "devtools" | "popup", PointerShape>>({
+    page: "default",
+    devtools: "default",
+    popup: "default",
+  });
   const [devtoolsOpen, setDevtoolsOpen] = useState(false);
   const [dock, setDock] = useState<DevtoolsDock>(
     typeof props.devtools === "string" ? props.devtools : "right",
   );
-  const dockRef = useRef(dock);
-  dockRef.current = dock;
   const [fraction, setFraction] = useState(0.4);
   const [dividerEngaged, setDividerEngaged] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -155,6 +158,7 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
       devtoolsEnabled: false,
       externalDevtools: false,
       externalDevtoolsAction: null,
+      externalDevtoolsCursor: null,
       toggleDevtools: () => { },
       handleKey: () => false,
     }),
@@ -186,21 +190,12 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
 
   const syncCursor = () => {
     const host = hostRef.current;
-    const h = hover.current;
-    const shape = h.divider
-      ? dockRef.current === "bottom"
-        ? "ns-resize"
-        : "ew-resize"
-      : h.devtools
-        ? host?.devtools?.cursorShape ?? "default"
-        : host?.popup
-          ? h.popup
-            ? host.popup.cursorShape
-            : "default"
-          : h.page
-            ? host?.cursorShape ?? "default"
-            : "default";
-    registry.setPointerShape(shape);
+    setPointerShapes({
+      page: host?.cursorShape ?? "default",
+      devtools: host?.devtools?.cursorShape ?? "default",
+      popup: host?.popup?.cursorShape ?? "default",
+    });
+    entry.externalDevtoolsCursor?.(host?.devtools?.cursorShape ?? "default");
   };
 
   const readPopup = (host: PageHost): PopupView | null => {
@@ -538,6 +533,7 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
             cornerRadius: props.style?.cornerRadius,
             background: props.browserWindowOptions?.transparent ? undefined : theme.bg,
             opaque: !props.browserWindowOptions?.transparent,
+            pointerShape: pointerShapes.page,
           }}
           onPointer={(event: PointerEvent) => {
             if (menuRef.current) {
@@ -552,14 +548,6 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
             registry.focus(entry);
             hostRef.current?.wheel(event);
           }}
-          onMouseEnter={() => {
-            hover.current.page = true;
-            syncCursor();
-          }}
-          onMouseLeave={() => {
-            hover.current.page = false;
-            syncCursor();
-          }}
         />
       )}
       {devtoolsRect && surfaces.current && (
@@ -570,6 +558,7 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
           theme={theme}
           surface={surfaces.current.devtools}
           dividerEngaged={dividerEngaged}
+          pointerShape={pointerShapes.devtools}
           onPointer={(event) => {
             const host = hostRef.current;
             if (!host?.devtools) return;
@@ -582,15 +571,7 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
             registry.focus(entry, "devtools");
             host.devtools.input.wheel(event);
           }}
-          onHover={(hovering) => {
-            hover.current.devtools = hovering;
-            syncCursor();
-          }}
           onDividerDrag={onDividerDrag}
-          onDividerHover={(hovering) => {
-            hover.current.divider = hovering;
-            syncCursor();
-          }}
         />
       )}
       {popupView && page && surfaces.current && (
@@ -600,6 +581,7 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
           rem={rem}
           theme={theme}
           surface={surfaces.current.popup}
+          pointerShape={pointerShapes.popup}
           onPointer={(event) => {
             registry.focus(entry, "popup");
             hostRef.current?.popup?.input.pointer(event);
@@ -607,10 +589,6 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
           onWheel={(event) => {
             registry.focus(entry, "popup");
             hostRef.current?.popup?.input.wheel(event);
-          }}
-          onHover={(hovering) => {
-            hover.current.popup = hovering;
-            syncCursor();
           }}
           onClose={() => hostRef.current?.popup?.close()}
         />

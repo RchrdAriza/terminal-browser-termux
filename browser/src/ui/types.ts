@@ -174,6 +174,7 @@ export interface ChromeLayout {
     dock: "bottom" | "right";
   } | null;
   rem: number;
+  frame: number;
 }
 
 export interface TabView {

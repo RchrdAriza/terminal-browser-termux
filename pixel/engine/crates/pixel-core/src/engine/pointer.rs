@@ -348,10 +348,6 @@ impl Engine {
                 };
                 self.emit_wheel(view, local, delta, 0.0, false, mouse.mods, out);
             }
-            // Reaching here means the tick was not consumed as pairing
-            // signal: no native gesture (headless, synthetic input) or a
-            // modified scroll (e.g. ctrl+wheel zoom), which always rides the
-            // terminal events — the helper cannot report modifiers.
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
                 let view = self.comp.view_at(point.0);
                 self.mark_scroll(view);
@@ -377,6 +373,33 @@ impl Engine {
             _ => {}
         }
         Ok(())
+    }
+
+    pub(super) fn sync_pointer_shape(&mut self) {
+        let Some(point) = self.cursor else {
+            return;
+        };
+        if self.drag.is_some()
+            || self.pointer_capture.is_some()
+            || self.bar_drag.is_some()
+            || self.comp.divider_drag
+        {
+            return;
+        }
+        let shape = if self.comp.on_divider(point.0) {
+            "ew-resize"
+        } else {
+            let view = self.comp.view_at(point.0);
+            let local = self.comp.to_local(view, point);
+            self.comp.views[view].tree.pointer_shape_at(local.0, local.1)
+        };
+        if self.pointer_shape.as_deref() == Some(shape) {
+            return;
+        }
+        let shape = shape.to_string();
+        if self.term.set_pointer_shape(&shape).is_ok() {
+            self.pointer_shape = Some(shape);
+        }
     }
 
     pub(super) fn update_hover_target(

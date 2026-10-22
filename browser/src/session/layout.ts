@@ -110,6 +110,7 @@ export function computeLayout(
     },
     devtools: null,
     rem: info.basePx,
+    frame: Math.max(1, Math.round(scale)),
   };
   const gap = Math.max(2, Math.round(info.basePx * 0.25));
   const split = splitForDevtools(chrome.page, devtools, gap);

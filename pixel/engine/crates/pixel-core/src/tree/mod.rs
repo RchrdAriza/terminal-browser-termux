@@ -258,6 +258,7 @@ pub(crate) struct RNode {
     pub abs: PxRect,
     pub visible: PxRect,
     pub order: u32,
+    pub text_offset_y: f32,
 }
 
 struct Slot {
@@ -456,6 +457,7 @@ impl Tree {
             abs: PxRect::ZERO,
             visible: PxRect::ZERO,
             order: 0,
+            text_offset_y: 0.0,
         };
         let id = match self.free.pop() {
             Some(index) => {
@@ -1141,6 +1143,16 @@ impl Tree {
         self.place_node(self.root, (0.0, 0.0), Some(window), fonts);
     }
 
+    fn single_line_offset(&self, id: NodeId, layout: &taffy::Layout, fonts: &[fontdue::Font]) -> f32 {
+        let node = self.node(id);
+        if node.input.is_none() || node.style.wrap {
+            return 0.0;
+        }
+        let font = &fonts[node.resolved.font.min(fonts.len() - 1)];
+        let content = layout.size.height - layout.padding.top - layout.padding.bottom;
+        ((content - line_height(font, node.resolved.px)) / 2.0).max(0.0).round()
+    }
+
     fn place_node(
         &mut self,
         id: NodeId,
@@ -1167,9 +1179,11 @@ impl Tree {
         if let Some(surface) = moved_surface {
             self.changed_surfaces.push(surface);
         }
+        let text_offset_y = self.single_line_offset(id, &layout, fonts);
         let node = self.node_mut(id);
         node.abs = rect;
         node.visible = visible;
+        node.text_offset_y = text_offset_y;
         let scrolls = node.style.overflow == Overflow::Scroll;
         if scrolls {
             let content = node.content_height.unwrap_or(layout.content_size.height);
@@ -1353,6 +1367,30 @@ impl Tree {
             self.get(id)
                 .is_some_and(|node| node.visible.w > 0.0 && node.visible.contains(x, y))
         })
+    }
+
+    pub fn pointer_shape_at(&self, x: f32, y: f32) -> &str {
+        let mut current = self.hit_any(x, y);
+        let mut over_text = false;
+        while let Some(id) = current {
+            let Some(node) = self.get(id) else {
+                break;
+            };
+            if let Some(shape) = &node.style.pointer_shape {
+                return shape;
+            }
+            if node.input.is_some() {
+                return "text";
+            }
+            if self.selectable_text_leaf(id) {
+                over_text = true;
+            }
+            if node.clickable {
+                over_text = false;
+            }
+            current = node.parent;
+        }
+        if over_text { "text" } else { "default" }
     }
 
     pub fn hit_click(&self, x: f32, y: f32) -> Option<NodeId> {
@@ -1563,7 +1601,7 @@ impl Tree {
         Some(InputGeometry {
             origin: (
                 node.abs.x + layout.padding.left,
-                node.abs.y + layout.padding.top,
+                node.abs.y + layout.padding.top + node.text_offset_y,
             ),
             font: node.resolved.font,
             px: node.resolved.px,

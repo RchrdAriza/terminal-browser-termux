@@ -71,7 +71,7 @@ import type {
 } from "../ui/types";
 import { displayUrl, normalizeUrl, searchOrUrl, searchUrlFor } from "../url";
 import type { SearchUrl } from "../url";
-import { START_URL } from "../pages/scheme";
+import { HOME_URL, START_URL } from "../pages/scheme";
 import type { PageContext } from "../pages/scheme";
 import { makeTheme } from "../ui/theme";
 import { fuzzyScore } from "./fuzzy";
@@ -269,7 +269,7 @@ class Session {
 
   constructor(ctx: SessionContext) {
     this.ctx = ctx;
-    this.defaultUrl = ctx.env.TERMINAL_BROWSER_START_PAGE === "1" ? START_URL : "about:blank";
+    this.defaultUrl = ctx.env.TERMINAL_BROWSER_START_PAGE === "1" ? START_URL : HOME_URL;
     const socket = ctx.env[TERMINAL_SOCKET_ENV];
     this.terminal = socket ? socketTerminal(socket) : detect(ctx.env);
     this.marker = `terminal-browser:${ctx.key}`;
@@ -371,7 +371,6 @@ class Session {
     this.applyRenderSettings();
     this.settings.watch();
     this.recalculateLayout();
-    this.root.setPointerShape("default");
     this.tabs.create(this.fallbackState.url);
     this.registry = new Registry({
       key: this.ctx.key,
@@ -596,9 +595,6 @@ class Session {
     newTabCancel: () => this.closeNewTabModal(),
     devtoolsDividerHover: (hovering) => {
       this.dividerHover = hovering;
-      this.root?.setPointerShape(
-        hovering ? (this.devtoolsDockSide === "bottom" ? "ns-resize" : "ew-resize") : "default",
-      );
       this.render();
     },
     devtoolsDividerDrag: (event) => {
@@ -864,6 +860,12 @@ class Session {
         if (tab && !this.activeRecord()?.reviewing) this.closeOrShutdown(tab.id);
         return;
       }
+      case "tab.next":
+        this.activateAdjacentTab(1);
+        return;
+      case "tab.previous":
+        this.activateAdjacentTab(-1);
+        return;
       case "url.edit":
         this.openUrlEdit();
         return;
@@ -1457,6 +1459,8 @@ class Session {
     });
     return [
       command("find"),
+      command("tab.next"),
+      command("tab.previous"),
       command("record.toggle"),
       command("grab.toggle"),
       command("devtools.toggle"),
@@ -1508,6 +1512,14 @@ class Session {
         : []),
       command("settings.open"),
     ];
+  }
+
+  private activateAdjacentTab(step: 1 | -1) {
+    const tabs = this.tabs.all();
+    const active = this.tabs.active;
+    if (!active || tabs.length < 2) return;
+    const at = tabs.findIndex((tab) => tab.id === active.id);
+    this.tabs.activate(tabs[(at + step + tabs.length) % tabs.length]!.id);
   }
 
   private requestDevReload(socketPath: string) {

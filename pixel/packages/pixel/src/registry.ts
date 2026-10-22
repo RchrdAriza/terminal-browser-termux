@@ -1,6 +1,6 @@
 import { createContext, useSyncExternalStore } from "react";
 
-import type { EngineKeyEvent, LayoutSnapshot, PastedImage, PixelRoot, TerminalColors } from "./react";
+import type { EngineKeyEvent, LayoutSnapshot, PastedImage, PixelRoot, PointerShape, TerminalColors } from "./react";
 import { createStore } from "./react/devtools/store";
 import type { Store } from "./react/devtools/store";
 import type { PageHost } from "./web/host";
@@ -13,6 +13,7 @@ export interface ViewEntry {
   devtoolsEnabled: boolean;
   externalDevtools: boolean;
   externalDevtoolsAction: ((action: "close" | "dock-bottom" | "dock-right") => void) | null;
+  externalDevtoolsCursor: ((shape: PointerShape) => void) | null;
   toggleDevtools(): void;
   handleKey(event: EngineKeyEvent): boolean;
   // Views without a PageHost (a guest app's pixels) take these directly.
@@ -37,7 +38,6 @@ export class ViewRegistry {
     at: 0,
   });
   readonly colors: Store<TerminalColors>;
-  private sentCursor: string | null = null;
 
   constructor(
     readonly root: PixelRoot,
@@ -87,12 +87,6 @@ export class ViewRegistry {
 
   quit(entry: ViewEntry | null) {
     this.hooks.quit(entry);
-  }
-
-  setPointerShape(shape: string) {
-    if (shape === this.sentCursor) return;
-    this.sentCursor = shape;
-    this.root.setPointerShape(shape);
   }
 
   queryLayout() {

@@ -1,5 +1,5 @@
 import { BrowserWindow, screen } from "electron";
-import type { EngineKeyEvent, PastedImage, PointerEvent, Surface, WheelEvent } from "../react";
+import type { EngineKeyEvent, PastedImage, PointerEvent, PointerShape, Surface, WheelEvent } from "../react";
 import { allowClipboardRead, onDownloadFor, routeThroughProxy } from "./browser-session";
 import type { DownloadProgress } from "./browser-session";
 import { cursorShapeFor } from "./cursor";
@@ -108,7 +108,7 @@ export class PageHost {
   private readonly bitmaps: BitmapPresenter;
   private lastFrameSize: { width: number; height: number } | null = null;
   onFrameSubmitted: (() => void) | null = null;
-  cursorShape = "default";
+  cursorShape: PointerShape = "default";
   onCursorChange: ((shape: string) => void) | null = null;
   onOpenWindow: OpenWindowPolicy | null = null;
   onQuit: (() => void) | null = null;

@@ -17,7 +17,7 @@ export interface AgentTarget {
 const CONTROL_BYTES = /[\x00-\x1f\x7f-\x9f]/g;
 
 export function chatMessage(content: string, target: AgentTarget, screenshotFile: string | null = null): string {
-  const line = `> ${content.replace(CONTROL_BYTES, " ").replace(/\s+/g, " ").trim()}`;
+  const line = content.replace(CONTROL_BYTES, " ").replace(/\s+/g, " ").trim();
   if (!target.agent) return shellLiteral(screenshotFile ? `${line} ${screenshotFile}` : line);
   return screenshotFile ? `${line}\n${screenshotFile}\n\n` : `${line}\n\n`;
 }

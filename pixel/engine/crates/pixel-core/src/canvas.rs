@@ -21,24 +21,109 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-fn corner_insets(radius: [f32; 4], row: i64, height: i64) -> (i64, i64) {
-    if radius == [0.0; 4] {
-        return (0, 0);
-    }
-    let dy_top = row as f32 + 0.5;
-    let dy_bottom = (height - 1 - row) as f32 + 0.5;
-    let inset = |r: f32, dy: f32| -> i64 {
-        if r <= 0.0 || dy >= r {
-            0
-        } else {
-            let reach = r - dy;
-            (r - (r * r - reach * reach).sqrt()).ceil() as i64
+#[derive(Clone, Copy)]
+struct RoundedBlit {
+    radius: [f32; 4],
+    width: i64,
+    height: i64,
+}
+
+impl RoundedBlit {
+    fn new(radius: [f32; 4], width: i64, height: i64) -> Self {
+        let cap = (width as f32 / 2.0).min(height as f32 / 2.0);
+        let radius = radius.map(|r| if r < 0.5 { 0.0 } else { r.min(cap) });
+        Self {
+            radius,
+            width,
+            height,
         }
-    };
-    (
-        inset(radius[0], dy_top).max(inset(radius[3], dy_bottom)),
-        inset(radius[1], dy_top).max(inset(radius[2], dy_bottom)),
-    )
+    }
+
+    fn corner_coverage(r: f32, px: f32, py: f32) -> f32 {
+        if r <= 0.0 || px >= r || py >= r {
+            return 1.0;
+        }
+        let d = ((r - px) * (r - px) + (r - py) * (r - py)).sqrt();
+        (r - d + 0.5).clamp(0.0, 1.0)
+    }
+
+    fn coverage(&self, col: i64, row: i64) -> f32 {
+        let left = col as f32 + 0.5;
+        let right = (self.width - 1 - col) as f32 + 0.5;
+        let top = row as f32 + 0.5;
+        let bottom = (self.height - 1 - row) as f32 + 0.5;
+        Self::corner_coverage(self.radius[0], left, top)
+            .min(Self::corner_coverage(self.radius[1], right, top))
+            .min(Self::corner_coverage(self.radius[2], right, bottom))
+            .min(Self::corner_coverage(self.radius[3], left, bottom))
+    }
+
+    fn spans(&self, row: i64, first_col: i64, last_col: i64) -> [(i64, i64); 3] {
+        let top = row as f32 + 0.5;
+        let bottom = (self.height - 1 - row) as f32 + 0.5;
+        let reach = |r: f32, dy: f32| {
+            if r > 0.0 && dy < r {
+                r.ceil() as i64 + 1
+            } else {
+                0
+            }
+        };
+        let left = reach(self.radius[0], top)
+            .max(reach(self.radius[3], bottom))
+            .min(self.width);
+        let right = reach(self.radius[1], top)
+            .max(reach(self.radius[2], bottom))
+            .min(self.width - left);
+        let full_from = left.clamp(first_col, last_col);
+        let full_to = (self.width - right).clamp(full_from, last_col);
+        [
+            (first_col, full_from),
+            (full_from, full_to),
+            (full_to, last_col),
+        ]
+    }
+
+    fn row(
+        &self,
+        row: i64,
+        first_col: i64,
+        dst: &mut [u8],
+        src: &[u8],
+        mut full: impl FnMut(&mut [u8], &[u8]),
+        mut partial: impl FnMut(&mut [u8], &[u8], u32),
+    ) {
+        let last_col = first_col + src.len() as i64 / 4;
+        let [left, middle, right] = self.spans(row, first_col, last_col);
+        for (from, to) in [left, right] {
+            for col in from..to {
+                let coverage = (self.coverage(col, row) * 255.0 + 0.5) as u32;
+                if coverage == 0 {
+                    continue;
+                }
+                let at = (col - first_col) as usize * 4;
+                partial(&mut dst[at..at + 4], &src[at..at + 4], coverage);
+            }
+        }
+        let (from, to) = (
+            (middle.0 - first_col) as usize * 4,
+            (middle.1 - first_col) as usize * 4,
+        );
+        if to > from {
+            full(&mut dst[from..to], &src[from..to]);
+        }
+    }
+}
+
+fn lerp_pixel(dst: &mut [u8], src: &[u8], coverage: u32) {
+    for (d, &s) in dst.iter_mut().zip(src) {
+        *d = ((u32::from(s) * coverage + u32::from(*d) * (255 - coverage) + 127) / 255) as u8;
+    }
+}
+
+fn blend_covered_pixel(dst: &mut [u8], src: &[u8], coverage: u32) {
+    let covered =
+        [src[0], src[1], src[2], src[3]].map(|v| ((u32::from(v) * coverage + 127) / 255) as u8);
+    blend_pixel(dst, &covered, covered[3]);
 }
 
 #[derive(Default)]
@@ -763,30 +848,38 @@ impl Canvas {
         }
         let src = image.data();
         let src_stride = image.width() as usize * 4;
-        let src_w = i64::from(image.width());
-        let height = i64::from(image.height());
+        let rounded = RoundedBlit::new(radius, i64::from(image.width()), i64::from(image.height()));
         let dst_stride = self.width as usize * 4;
         let rows = (y2 - y1) as usize;
+        let col0 = (x1 - x0) as usize * 4;
+        let col1 = (x2 - x0) as usize * 4;
         let run_rows = |dst_rows: &mut [u8], first_row: i64, count: usize| {
             for r in 0..count {
                 let row = first_row + r as i64;
-                let (inset_l, inset_r) = corner_insets(radius, row - y0, height);
-                let rx1 = x1.max(x0 + inset_l);
-                let rx2 = x2.min(x0 + src_w - inset_r);
-                if rx2 <= rx1 {
-                    continue;
-                }
-                let col0 = (rx1 - x0) as usize * 4;
-                let col1 = (rx2 - x0) as usize * 4;
                 let src_off = (row - y0) as usize * src_stride;
                 let src_row = &src[src_off + col0..src_off + col1];
-                let dst_off = r * dst_stride + rx1 as usize * 4;
+                let dst_off = r * dst_stride + x1 as usize * 4;
                 let dst_row = &mut dst_rows[dst_off..dst_off + src_row.len()];
-                if opaque {
-                    dst_row.copy_from_slice(src_row);
-                } else {
-                    blend_row(dst_row, src_row);
-                }
+                rounded.row(
+                    row - y0,
+                    x1 - x0,
+                    dst_row,
+                    src_row,
+                    |dst, src| {
+                        if opaque {
+                            dst.copy_from_slice(src);
+                        } else {
+                            blend_row(dst, src);
+                        }
+                    },
+                    |dst, px, coverage| {
+                        if opaque {
+                            lerp_pixel(dst, px, coverage);
+                        } else {
+                            blend_covered_pixel(dst, px, coverage);
+                        }
+                    },
+                );
             }
         };
         let dst_from = y1 as usize * dst_stride;
@@ -823,30 +916,31 @@ impl Canvas {
             return;
         }
         let src_stride = src_w as usize * 4;
-        let height = i64::from(src_h);
+        let rounded = RoundedBlit::new(radius, i64::from(src_w), i64::from(src_h));
         let dst_stride = self.width as usize * 4;
         let rows = (y2 - y1) as usize;
+        let col0 = (x1 - x0) as usize * 4;
+        let col1 = (x2 - x0) as usize * 4;
+        let swizzle = |px: &[u8]| [px[2], px[1], px[0], px[3]];
         let run_rows = |dst_rows: &mut [u8], first_row: i64, count: usize| {
             for r in 0..count {
                 let row = first_row + r as i64;
-                let (inset_l, inset_r) = corner_insets(radius, row - y0, height);
-                let rx1 = x1.max(x0 + inset_l);
-                let rx2 = x2.min(x0 + i64::from(src_w) - inset_r);
-                if rx2 <= rx1 {
-                    continue;
-                }
-                let col0 = (rx1 - x0) as usize * 4;
-                let col1 = (rx2 - x0) as usize * 4;
                 let src_off = (row - y0) as usize * src_stride;
                 let src_row = &src[src_off + col0..src_off + col1];
-                let dst_off = r * dst_stride + rx1 as usize * 4;
+                let dst_off = r * dst_stride + x1 as usize * 4;
                 let dst_row = &mut dst_rows[dst_off..dst_off + src_row.len()];
-                for (dst, px) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
-                    dst[0] = px[2];
-                    dst[1] = px[1];
-                    dst[2] = px[0];
-                    dst[3] = px[3];
-                }
+                rounded.row(
+                    row - y0,
+                    x1 - x0,
+                    dst_row,
+                    src_row,
+                    |dst, src| {
+                        for (dst, px) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                            dst.copy_from_slice(&swizzle(px));
+                        }
+                    },
+                    |dst, px, coverage| lerp_pixel(dst, &swizzle(px), coverage),
+                );
             }
         };
         let dst_from = y1 as usize * dst_stride;
@@ -976,13 +1070,9 @@ impl Canvas {
         };
         let mut top = (usize::MAX, vec![0u8; row_bytes]);
         let mut bottom = (usize::MAX, vec![0u8; row_bytes]);
+        let mut sampled = vec![0u8; row_bytes];
+        let rounded = RoundedBlit::new(radius, i64::from(dst_w), i64::from(dst_h));
         for row in y1..y2 {
-            let (inset_l, inset_r) = corner_insets(radius, row - y0, i64::from(dst_h));
-            let rx1 = x1.max(x0 + inset_l);
-            let rx2 = x2.min(x0 + i64::from(dst_w) - inset_r);
-            if rx2 <= rx1 {
-                continue;
-            }
             let (sy0, fy) = weight(row, y0, dst_h, src_h);
             let sy1 = (sy0 + 1).min(src_h as usize - 1);
             if top.0 != sy0 {
@@ -997,24 +1087,25 @@ impl Canvas {
                 hsample(&src[sy1 * src_stride..][..src_stride], &mut bottom.1);
                 bottom.0 = sy1;
             }
-            let dst_off = row as usize * dst_stride + rx1 as usize * 4;
-            let dst_row = &mut self.pixels[dst_off..dst_off + (rx2 - rx1) as usize * 4];
-            let from = (rx1 - x1) as usize * 4;
-            for ((dst, a), b) in dst_row
+            for ((s, a), b) in sampled
                 .chunks_exact_mut(4)
-                .zip(top.1[from..].chunks_exact(4))
-                .zip(bottom.1[from..].chunks_exact(4))
+                .zip(top.1.chunks_exact(4))
+                .zip(bottom.1.chunks_exact(4))
             {
-                let mut s = [0u8; 4];
                 for c in 0..4 {
                     s[c] = ((u32::from(a[c]) * (256 - fy) + u32::from(b[c]) * fy + 128) >> 8) as u8;
                 }
-                match s[3] {
-                    255 => dst.copy_from_slice(&s),
-                    0 => {}
-                    sa => blend_pixel(dst, &s, sa),
-                }
             }
+            let dst_off = row as usize * dst_stride + x1 as usize * 4;
+            let dst_row = &mut self.pixels[dst_off..dst_off + row_bytes];
+            rounded.row(
+                row - y0,
+                x1 - x0,
+                dst_row,
+                &sampled,
+                blend_row,
+                blend_covered_pixel,
+            );
         }
     }
 
@@ -1411,6 +1502,33 @@ mod tests {
         assert_eq!(px(11, 0), &[9, 9, 9, 255], "top-right square");
         assert_eq!(px(0, 11), &[0, 0, 0, 0], "bottom-left rounded away");
         assert_eq!(px(11, 11), &[0, 0, 0, 0], "bottom-right rounded away");
+    }
+
+    #[test]
+    fn rounded_blits_anti_alias_their_corners() {
+        let side = 20;
+        let mut canvas = Canvas::new(side, side);
+        let source = vec![255u8; (side * side * 4) as usize];
+        canvas.blit_bgra_rounded_hint(0.0, 0.0, &source, side, side, [8.0; 4]);
+        let red = |x: u32, y: u32| canvas.pixels[((y * side + x) * 4) as usize];
+        assert_eq!(red(0, 0), 0, "outside the arc stays clear");
+        assert_eq!(red(3, 3), 255, "inside the arc copies the source");
+        assert_eq!(red(10, 0), 255, "the straight edge is untouched");
+        assert!(0 < red(2, 2) && red(2, 2) < 255, "the arc edge is partial: {}", red(2, 2));
+        assert_eq!(red(2, 2), red(17, 17), "corners mirror each other");
+        assert_eq!(red(2, 2), red(17, 2), "corners mirror each other");
+
+        let mut canvas = Canvas::new(side, side);
+        let image = tiny_skia::PixmapRef::from_bytes(&source, side, side).unwrap();
+        canvas.blit_image_rounded(0.0, 0.0, image, [8.0; 4]);
+        let blended = canvas.pixels[((2 * side + 2) * 4) as usize];
+        assert!(0 < blended && blended < 255, "blend path covers partially: {blended}");
+
+        let mut canvas = Canvas::new(side, side);
+        canvas.blit_scaled_rgba_rounded(0.0, 0.0, 20.0, 20.0, &source, 10, 10, [8.0; 4]);
+        let scaled = canvas.pixels[((2 * side + 2) * 4) as usize];
+        assert!(0 < scaled && scaled < 255, "scaled path covers partially: {scaled}");
+        assert_eq!(canvas.pixels[((10 * side + 10) * 4) as usize], 255);
     }
 
     #[test]

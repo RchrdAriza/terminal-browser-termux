@@ -217,6 +217,7 @@ pub struct Style {
     pub opaque: bool,
     pub selection_color: Option<Color>,
     pub selection_mode: SelectionMode,
+    pub pointer_shape: Option<String>,
 }
 
 impl Default for Style {
@@ -254,6 +255,7 @@ impl Default for Style {
             selectable: None,
             selection_color: None,
             selection_mode: SelectionMode::default(),
+            pointer_shape: None,
         }
     }
 }

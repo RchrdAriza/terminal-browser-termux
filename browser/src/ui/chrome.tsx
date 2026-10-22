@@ -164,18 +164,18 @@ export function Chrome({
         <Box
           style={{
             position: "absolute",
-            inset: { top: layout.page.y - 1, left: layout.page.x - 1 },
-            width: Math.round(Math.min(1, progress) * (layout.page.width + 2)),
+            inset: { top: layout.page.y - layout.frame, left: layout.page.x - layout.frame },
+            width: Math.round(Math.min(1, progress) * (layout.page.width + layout.frame * 2)),
             height: Math.max(2, Math.round(layout.rem * 0.12)),
             overflow: "hidden",
           }}
         >
           <Box
             style={{
-              width: layout.page.width + 2,
+              width: layout.page.width + layout.frame * 2,
               height: Math.round(layout.rem * 2),
               flexShrink: 0,
-              cornerRadius: layout.rem * 0.55,
+              cornerRadius: Math.max(2, layout.rem * 0.55 - 1) + layout.frame,
               border: {
                 width: Math.max(2, Math.round(layout.rem * 0.12)),
                 color: theme.accent,
@@ -504,17 +504,19 @@ function BrowserTabContents({
   coveredByReview: boolean;
 }) {
   const dock = layout.devtools?.dock ?? null;
+  const frame = layout.frame;
+  const pageRadius = Math.max(2, layout.rem * 0.55 - 1);
   return (
     <>
       {!coveredByReview && (
         <Box
           style={{
             position: "absolute",
-            inset: { top: layout.page.y - 1, left: layout.page.x - 1 },
-            width: layout.page.width + 2,
-            height: layout.page.height + 2,
-            cornerRadius: seamRadius(layout.rem * 0.55, dock, "page"),
-            border: { width: 1, color: agentActive ? theme.accent : theme.frame },
+            inset: { top: layout.page.y - frame, left: layout.page.x - frame },
+            width: layout.page.width + frame * 2,
+            height: layout.page.height + frame * 2,
+            cornerRadius: seamRadius(pageRadius + frame, dock, "page"),
+            border: { width: frame, color: agentActive ? theme.accent : theme.frame },
           }}
         />
       )}
@@ -536,7 +538,7 @@ function BrowserTabContents({
             inset: { top: layout.page.y, left: layout.page.x },
             width: layout.page.width,
             height: layout.page.height,
-            cornerRadius: seamRadius(Math.max(2, layout.rem * 0.55 - 1), dock, "page"),
+            cornerRadius: seamRadius(pageRadius, dock, "page"),
             background: theme.bg,
           }}
           onChange={(state) => tabActions.state(tab.id, state)}
@@ -571,6 +573,8 @@ function DevtoolsPane({
   dividerEngaged: boolean;
 }) {
   const rect = layout.devtools!;
+  const frame = layout.frame;
+  const pageRadius = Math.max(2, layout.rem * 0.55 - 1);
   const horizontal = rect.dock === "bottom";
   const grab = Math.max(8, Math.round(layout.rem * 0.5));
   const divider = horizontal
@@ -585,11 +589,11 @@ function DevtoolsPane({
       <Box
         style={{
           position: "absolute",
-          inset: { top: rect.y - 1, left: rect.x - 1 },
-          width: rect.width + 2,
-          height: rect.height + 2,
-          cornerRadius: seamRadius(layout.rem * 0.55, rect.dock, "devtools"),
-          border: { width: 1, color: theme.frame },
+          inset: { top: rect.y - frame, left: rect.x - frame },
+          width: rect.width + frame * 2,
+          height: rect.height + frame * 2,
+          cornerRadius: seamRadius(pageRadius + frame, rect.dock, "devtools"),
+          border: { width: frame, color: theme.frame },
         }}
       />
       {target && (
@@ -603,7 +607,7 @@ function DevtoolsPane({
             inset: { top: rect.y, left: rect.x },
             width: rect.width,
             height: rect.height,
-            cornerRadius: seamRadius(Math.max(2, layout.rem * 0.55 - 1), rect.dock, "devtools"),
+            cornerRadius: seamRadius(pageRadius, rect.dock, "devtools"),
             background: theme.bg,
           }}
         />
@@ -617,6 +621,7 @@ function DevtoolsPane({
           height: divider.height,
           background: dividerEngaged ? [...DIVIDER_ACTIVE] : undefined,
           cornerRadius: 2,
+          pointerShape: horizontal ? "ns-resize" : "ew-resize",
         }}
         onDrag={actions.devtoolsDividerDrag}
         onMouseEnter={() => actions.devtoolsDividerHover(true)}

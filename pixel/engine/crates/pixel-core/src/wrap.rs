@@ -59,10 +59,9 @@ fn wrap_logical_line(
             pen = 0.0;
         }
         if pen == 0.0 && word_w > max_width {
-            cursor = break_long_word(
+            pen = break_long_word(
                 text,
-                cursor,
-                chunk_end,
+                cursor..word_end,
                 font,
                 px,
                 max_width,
@@ -70,6 +69,8 @@ fn wrap_logical_line(
                 &mut line_start,
                 out,
             );
+            pen += measure_marked(font, text, word_end..chunk_end, px, marks);
+            cursor = chunk_end;
             continue;
         }
         pen += measure_marked(font, text, cursor..chunk_end, px, marks);
@@ -96,31 +97,26 @@ fn next_break(text: &str, from: usize, limit: usize) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn break_long_word(
     text: &str,
-    from: usize,
-    limit: usize,
+    word: Range<usize>,
     font: &fontdue::Font,
     px: f32,
     max_width: f32,
     marks: &[Mark],
     line_start: &mut usize,
     out: &mut Vec<Range<usize>>,
-) -> usize {
+) -> f32 {
     let mut pen = 0.0f32;
-    let mut cursor = from;
-    for (i, c) in text[from..limit].char_indices() {
-        let advance = char_advance(font, c, from + i, px, marks);
+    for (i, c) in text[word.clone()].char_indices() {
+        let at = word.start + i;
+        let advance = char_advance(font, c, at, px, marks);
         if pen > 0.0 && pen + advance > max_width {
-            out.push(*line_start..from + i);
-            *line_start = from + i;
+            out.push(*line_start..at);
+            *line_start = at;
             pen = 0.0;
         }
         pen += advance;
-        cursor = from + i + c.len_utf8();
-        if pen >= max_width && cursor < limit {
-            break;
-        }
     }
-    cursor
+    pen
 }
 
 pub fn line_of_offset(lines: &[Range<usize>], offset: usize) -> usize {
@@ -191,6 +187,21 @@ mod tests {
             assert!(line.end > line.start, "always makes progress");
         }
         assert_eq!(lines.last().unwrap().end, text.len());
+    }
+
+    #[test]
+    fn overlong_words_next_to_short_words_stay_inside_the_width() {
+        let f = font();
+        let ch = measure_text(&f, "a", 16.0);
+        for text in ["aaaaaaaaaaaaaaaa bb aaaaaaaaaaaaaaaa", "bb aaaaaaaaaaaaaaaa cc", "aaaaaaaaaaaaaaaa bb"] {
+            let lines = wrap_lines(text, &f, 16.0, Some(ch * 6.0), &[]);
+            for line in &lines {
+                let visible = text[line.clone()].trim_end_matches(' ');
+                assert!(visible.len() <= 6, "{text:?} -> {:?}", parts(text, &lines));
+                assert!(!visible.starts_with(' '), "{text:?} -> {:?}", parts(text, &lines));
+            }
+            assert_eq!(lines.last().unwrap().end, text.len());
+        }
     }
 
     #[test]
